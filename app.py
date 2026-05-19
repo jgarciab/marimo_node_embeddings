@@ -1,7 +1,7 @@
 import marimo
 
 __generated_with = "0.23.6"
-app = marimo.App(width="medium", app_title="Day 3b: Node embeddings")
+app = marimo.App(width="medium", app_title="Node embeddings")
 
 
 @app.cell
@@ -117,7 +117,7 @@ def imports():
 @app.cell
 def title(mo):
     mo.md("""
-    # Day 3b Companion: Node embeddings and what we can do with them
+    # Node embeddings and what we can do with them
 
     A **node embedding** is a way of putting every vertex of a network into
     a vector space, so that geometry (distances, angles, clusters) becomes
@@ -668,64 +668,163 @@ def sec3_layout(mo, start_node, walk_fig, walk_length, walk_sentence_md):
 
 
 @app.cell
-def sec3_n2v_intro(graph_data, mo):
-    _g = graph_data["graph"]
-    if _g is None or graph_data["precomp_prefix"] is None:
-        mo.md(
-            "_Node2vec embeddings are precomputed only for the football and "
-            "karate networks. Switch to one of those to see how the bias "
-            "parameter $q$ reshapes the embedding._"
-        )
-    else:
-        mo.md(
-            "Repeat that walk many times from every node — you now have a "
-            "corpus of node-walks. Feed it to word2vec and you get a 32-d "
-            "vector for every node: that is **node2vec**. We sweep the "
-            "return/in-out bias $q$ at three extremes (with $p = 1$ fixed) "
-            "to show how strongly that bias reshapes the embedding. The "
-            "scatters are 2-d PCAs of the full 32-d vectors; colors are "
-            "the true class."
-        )
+def sec3_n2v_intro(mo):
+    mo.md(r"""
+    Repeat that walk many times from every node — you now have a corpus
+    of node-walks. Feed it to word2vec and you get a vector for every
+    node: that is **node2vec**. The two bias parameters $p$ and $q$
+    shape the walks:
+
+    - **$p$ (return bias)**: $p < 1$ encourages going back to the
+      previous node, $p > 1$ discourages it.
+    - **$q$ (in-out bias)**: $q < 1$ pushes the walk **outward** (DFS,
+      captures local communities / homophily), $q > 1$ keeps it
+      **close** to the start (BFS, captures structural roles).
+
+    Move the sliders to retrain a small node2vec on this graph and watch
+    the embedding reshape. (Behind the scenes we run biased random
+    walks, build a co-occurrence matrix, take its **shifted PPMI**, and
+    apply truncated SVD — the closed-form analog of skip-gram with
+    negative sampling. Fast enough to run in your browser.)
+    """)
     return
 
 
 @app.cell
-def load_n2v_all(load_npy, graph_data):
-    _g = graph_data["graph"]
-    _prefix = graph_data["precomp_prefix"]
-    if _g is None or _prefix is None:
-        n2v_embs = None
-    else:
-        n2v_embs = {
-            "p=1, q=0.25 (very depth-first / homophily)":
-                load_npy(f"{_prefix}node2vec_p1_q0.25.npy"),
-            "p=1, q=1 (balanced)":
-                load_npy(f"{_prefix}node2vec_p1_q1.npy"),
-            "p=1, q=4 (very breadth-first / structural)":
-                load_npy(f"{_prefix}node2vec_p1_q4.npy"),
-        }
-    return (n2v_embs,)
+def sec3_n2v_widgets(mo):
+    p_slider = mo.ui.slider(
+        start=0.25, stop=4.0, step=0.25, value=1.0, label="p (return bias)",
+        show_value=True,
+    )
+    q_slider = mo.ui.slider(
+        start=0.25, stop=4.0, step=0.25, value=1.0, label="q (in-out bias)",
+        show_value=True,
+    )
+    return p_slider, q_slider
 
 
 @app.cell
-def plot_n2v_all(PALETTE, PCA, graph_data, mo, n2v_embs, plt, silhouette_score):
-    mo.stop(
-        n2v_embs is None,
-        mo.md(
-            "_(Switch to Football or Karate to see precomputed node2vec "
-            "embeddings.)_"
-        ),
-    )
+def sec3_n2v_show_widgets(mo, p_slider, q_slider):
+    mo.hstack([p_slider, q_slider], justify="start", gap=2.0)
+    return
+
+
+@app.cell
+def n2v_compute(TruncatedSVD, graph_data, mo, np, p_slider, q_slider):
+    """In-browser node2vec via biased walks + shifted-PPMI + SVD.
+
+    Equivalent (up to constants) to skip-gram with negative sampling for
+    small graphs — see Levy & Goldberg 2014. Avoids needing gensim/torch
+    in Pyodide.
+    """
+    _g = graph_data["graph"]
+    mo.stop(_g is None, mo.md("_(No graph.)_"))
+
+    _p = float(p_slider.value)
+    _q = float(q_slider.value)
+    _n = _g.vcount()
+    _dim = min(32, _n - 1)
+    _num_walks = 10
+    _walk_length = 15
+    _window = 5
+    _neg_shift = 1.0  # shifted-PMI offset (log k for k=1; keeps it interpretable)
+
+    # Pre-compute neighbour lists and sets once.
+    _neighbours = [list(_g.neighbors(i)) for i in range(_n)]
+    _neighbour_sets = [set(nb) for nb in _neighbours]
+
+    _rng = np.random.default_rng(1546)
+
+    def _walk(start):
+        walk = [start]
+        nbrs = _neighbours[start]
+        if not nbrs:
+            return walk
+        walk.append(int(_rng.choice(nbrs)))
+        for _ in range(_walk_length - 2):
+            cur = walk[-1]
+            prev = walk[-2]
+            nbrs = _neighbours[cur]
+            if not nbrs:
+                break
+            prev_set = _neighbour_sets[prev]
+            # Build unnormalised transition weights for node2vec:
+            #   1/p  if next == prev       (return)
+            #   1    if next ∈ N(prev)     (distance 1 from prev)
+            #   1/q  otherwise             (distance 2 from prev)
+            w = np.empty(len(nbrs), dtype=np.float64)
+            inv_p = 1.0 / _p
+            inv_q = 1.0 / _q
+            for i, x in enumerate(nbrs):
+                if x == prev:
+                    w[i] = inv_p
+                elif x in prev_set:
+                    w[i] = 1.0
+                else:
+                    w[i] = inv_q
+            # Sample via cumulative sum (faster than rng.choice with probs).
+            cw = np.cumsum(w)
+            r = _rng.random() * cw[-1]
+            walk.append(int(nbrs[int(np.searchsorted(cw, r))]))
+        return walk
+
+    # Generate walks
+    _walks = []
+    for _ in range(_num_walks):
+        _order = list(range(_n))
+        _rng.shuffle(_order)
+        for _s in _order:
+            _walks.append(_walk(_s))
+
+    # Co-occurrence within the window. Vectorised per-walk via slicing.
+    _C = np.zeros((_n, _n), dtype=np.float64)
+    for _w in _walks:
+        _L = len(_w)
+        for _i in range(_L):
+            _lo = max(0, _i - _window)
+            _hi = min(_L, _i + _window + 1)
+            for _j in range(_lo, _hi):
+                if _j == _i:
+                    continue
+                _C[_w[_i], _w[_j]] += 1.0
+
+    _total = _C.sum()
+    if _total == 0:
+        n2v_emb = np.zeros((_n, _dim))
+    else:
+        _row = _C.sum(axis=1, keepdims=True)
+        _col = _C.sum(axis=0, keepdims=True)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            _pmi = np.log((_C * _total) / (_row * _col + 1e-12))
+            _pmi = np.where(np.isfinite(_pmi), _pmi, 0.0)
+        # Shifted PPMI: max(PMI - log k, 0). k=1 here (interpretable).
+        _ppmi = np.maximum(_pmi - np.log(_neg_shift), 0.0)
+        _svd = TruncatedSVD(n_components=_dim, random_state=1546)
+        n2v_emb = _svd.fit_transform(_ppmi)
+    return (n2v_emb,)
+
+
+@app.cell
+def plot_n2v_interactive(
+    PALETTE, PCA, graph_data, mo, n2v_emb, p_slider, plt, q_slider, silhouette_score
+):
     _labels = graph_data["labels"]
-    _fig, _axes = plt.subplots(1, 3, figsize=(14.5, 4.8))
-    for _ax, (_name, _emb) in zip(_axes, n2v_embs.items()):
-        _emb2 = PCA(n_components=2, random_state=1546).fit_transform(_emb)
+    _emb2 = PCA(n_components=2, random_state=1546).fit_transform(n2v_emb)
+    _fig, _ax = plt.subplots(figsize=(7.0, 5.5))
+    if _labels is not None:
         _colors = [PALETTE[int(c) % len(PALETTE)] for c in _labels]
-        _ax.scatter(_emb2[:, 0], _emb2[:, 1], s=45, c=_colors, edgecolor="#333333", linewidth=0.4)
-        _ax.set_xlabel("PC 1")
-        _ax.set_ylabel("PC 2")
-        _ax.set_title(_name, fontsize=11)
-        _sil = silhouette_score(_emb, _labels)
+    else:
+        _colors = ["#0b789d"] * _emb2.shape[0]
+    _ax.scatter(
+        _emb2[:, 0], _emb2[:, 1], s=55, c=_colors, edgecolor="#333333", linewidth=0.4
+    )
+    _ax.set_xlabel("PC 1")
+    _ax.set_ylabel("PC 2")
+    _ax.set_title(
+        f"node2vec — 2D PCA (p = {p_slider.value:g}, q = {q_slider.value:g})"
+    )
+    if _labels is not None and len(set(_labels)) > 1:
+        _sil = silhouette_score(n2v_emb, _labels)
         _ax.text(
             0.98,
             0.02,
@@ -733,7 +832,7 @@ def plot_n2v_all(PALETTE, PCA, graph_data, mo, n2v_embs, plt, silhouette_score):
             transform=_ax.transAxes,
             ha="right",
             va="bottom",
-            fontsize=10,
+            fontsize=11,
             bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="#888888", alpha=0.9),
         )
     _fig.tight_layout()
@@ -873,59 +972,117 @@ def gnn_summary(gnn, mo):
 
 
 @app.cell
-def plot_gnn_embedding(PALETTE, PCA, graph_data, gnn, mo, np, plt, silhouette_score):
-    mo.stop(gnn is None, mo.md(""))
-    _labels = graph_data["labels"]
-    _emb = gnn["emb"]
-    _preds = gnn["preds"]
-    _train_mask = gnn["train_mask"]
-    _test_mask = gnn["test_mask"]
-    _emb2 = PCA(n_components=2, random_state=1546).fit_transform(_emb)
-    _wrong = (_preds != _labels) & _test_mask
+def gnn_embedding_fig(PALETTE, PCA, graph_data, gnn, mo, np, plt, silhouette_score):
+    """Build (but don't display) the GraphSAGE-embedding PCA figure.
 
-    _fig, _ax = plt.subplots(figsize=(7.5, 6.0))
-    _colors = np.array([PALETTE[int(c) % len(PALETTE)] for c in _labels])
-    # Train nodes: filled with the class colour.
-    _ax.scatter(
-        _emb2[_train_mask, 0], _emb2[_train_mask, 1],
-        s=70, c=_colors[_train_mask], edgecolor="#333333", linewidth=0.4,
-        zorder=2, label=f"train ({int(_train_mask.sum())})",
-    )
-    # Test nodes: hollow, coloured edge — same convention as the
-    # train/test split plot above.
-    _ax.scatter(
-        _emb2[_test_mask, 0], _emb2[_test_mask, 1],
-        s=75, facecolors="white",
-        edgecolor=_colors[_test_mask], linewidth=2.0,
-        zorder=3, label=f"test ({int(_test_mask.sum())})",
-    )
-    if _wrong.any():
+    Section 5 picks it up and shows it side-by-side with the network view.
+    """
+    if gnn is None:
+        gnn_emb_fig = None
+    else:
+        _labels = graph_data["labels"]
+        _emb = gnn["emb"]
+        _preds = gnn["preds"]
+        _train_mask = gnn["train_mask"]
+        _test_mask = gnn["test_mask"]
+        _emb2 = PCA(n_components=2, random_state=1546).fit_transform(_emb)
+        _wrong = (_preds != _labels) & _test_mask
+
+        _fig, _ax = plt.subplots(figsize=(6.6, 5.6))
+        _colors = np.array([PALETTE[int(c) % len(PALETTE)] for c in _labels])
         _ax.scatter(
-            _emb2[_wrong, 0], _emb2[_wrong, 1],
-            s=240, facecolors="none", edgecolor="black", linewidth=1.6,
-            zorder=4, label=f"test errors ({int(_wrong.sum())})",
+            _emb2[_train_mask, 0], _emb2[_train_mask, 1],
+            s=70, c=_colors[_train_mask], edgecolor="#333333", linewidth=0.4,
+            zorder=2, label=f"train ({int(_train_mask.sum())})",
         )
-    _ax.legend(loc="upper right", fontsize=10)
-    _ax.set_xlabel("PC 1")
-    _ax.set_ylabel("PC 2")
-    _ax.set_title(
-        "Learned GraphSAGE embedding (2D PCA, coloured by true class;\n"
-        "filled = train, hollow = test, black ring = wrong on test)"
-    )
-    _sil = silhouette_score(_emb, _labels)
-    _ax.text(
-        0.98,
-        0.02,
-        f"silhouette (full 32-d) = {_sil:.3f}",
-        transform=_ax.transAxes,
-        ha="right",
-        va="bottom",
-        fontsize=11,
-        bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="#888888", alpha=0.9),
-    )
-    _fig.tight_layout()
-    _fig
-    return
+        _ax.scatter(
+            _emb2[_test_mask, 0], _emb2[_test_mask, 1],
+            s=75, facecolors="white",
+            edgecolor=_colors[_test_mask], linewidth=2.0,
+            zorder=3, label=f"test ({int(_test_mask.sum())})",
+        )
+        if _wrong.any():
+            _ax.scatter(
+                _emb2[_wrong, 0], _emb2[_wrong, 1],
+                s=240, facecolors="none", edgecolor="black", linewidth=1.6,
+                zorder=4, label=f"test errors ({int(_wrong.sum())})",
+            )
+        _ax.legend(loc="upper right", fontsize=9)
+        _ax.set_xlabel("PC 1")
+        _ax.set_ylabel("PC 2")
+        _ax.set_title(
+            "Learned GraphSAGE embedding — 2D PCA\n"
+            "(filled = train, hollow = test, black ring = wrong on test)",
+            fontsize=11,
+        )
+        _sil = silhouette_score(_emb, _labels)
+        _ax.text(
+            0.98,
+            0.02,
+            f"silhouette (full 32-d) = {_sil:.3f}",
+            transform=_ax.transAxes,
+            ha="right",
+            va="bottom",
+            fontsize=10,
+            bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="#888888", alpha=0.9),
+        )
+        _fig.tight_layout()
+        gnn_emb_fig = _fig
+    return (gnn_emb_fig,)
+
+
+@app.cell
+def gnn_errors_network_fig(
+    LineCollection, PALETTE, graph_data, gnn, layout_data, np, plt
+):
+    """Network view with the same test-set errors highlighted."""
+    if gnn is None:
+        gnn_errors_fig = None
+    else:
+        _g = graph_data["graph"]
+        _coords = layout_data["coords"]
+        _labels = graph_data["labels"]
+        _preds = gnn["preds"]
+        _train_mask = gnn["train_mask"]
+        _test_mask = gnn["test_mask"]
+        _wrong = (_preds != _labels) & _test_mask
+
+        _fig, _ax = plt.subplots(figsize=(6.6, 5.6))
+        _ax.set_facecolor("white")
+        _bg = [[_coords[e.source], _coords[e.target]] for e in _g.es]
+        _bg_lc = LineCollection(_bg, colors="#dddddd", linewidths=0.5, alpha=0.7, zorder=1)
+        _ax.add_collection(_bg_lc)
+        _colors = np.array([PALETTE[int(c) % len(PALETTE)] for c in _labels])
+        _ax.scatter(
+            _coords[_train_mask, 0], _coords[_train_mask, 1],
+            s=70, c=_colors[_train_mask], edgecolor="#333333", linewidth=0.4,
+            zorder=3, label=f"train ({int(_train_mask.sum())})",
+        )
+        _ax.scatter(
+            _coords[_test_mask, 0], _coords[_test_mask, 1],
+            s=75, facecolors="white",
+            edgecolor=_colors[_test_mask], linewidth=2.0,
+            zorder=4, label=f"test ({int(_test_mask.sum())})",
+        )
+        if _wrong.any():
+            _ax.scatter(
+                _coords[_wrong, 0], _coords[_wrong, 1],
+                s=240, facecolors="none", edgecolor="black", linewidth=1.6,
+                zorder=5, label=f"test errors ({int(_wrong.sum())})",
+            )
+        _ax.set_xticks([])
+        _ax.set_yticks([])
+        _ax.grid(False)
+        _ax.set_aspect("equal")
+        _ax.set_title(
+            "Same nodes on the actual network\n"
+            "(black ring = misclassified test node)",
+            fontsize=11,
+        )
+        _ax.legend(loc="upper right", fontsize=9)
+        _fig.tight_layout()
+        gnn_errors_fig = _fig
+    return (gnn_errors_fig,)
 
 
 @app.cell
@@ -1060,11 +1217,38 @@ def classify_all(
 
 
 @app.cell
+def sec5_errors_header(gnn, mo):
+    mo.stop(gnn is None, mo.md(""))
+    mo.md(r"""
+    ### Where does GraphSAGE go wrong on the test set?
+
+    Left: the **learned 32-d GraphSAGE embedding**, projected to 2-d
+    with PCA. Right: the **same nodes back on the actual network**.
+    In both, filled markers are train nodes, hollow markers are
+    test nodes, and a **black ring** marks every test node the GNN
+    mis-classified. Most errors cluster on the boundary between two
+    classes in the embedding, but on the network you can see they
+    typically sit on **inter-conference edges** — teams that played a
+    lot of out-of-conference games are the hardest to place.
+    """)
+    return
+
+
+@app.cell
+def sec5_errors_layout(gnn, gnn_emb_fig, gnn_errors_fig, mo):
+    mo.stop(gnn is None, mo.md(""))
+    mo.hstack(
+        [gnn_emb_fig, gnn_errors_fig], widths=[1, 1], gap=1.0, align="start"
+    )
+    return
+
+
+@app.cell
 def footer(mo):
     mo.md("""
     ---
 
-    _Network Science Summer School 2026 · UU · marimo companion app for Day 3b._
+    _An interactive companion on node embeddings, built with [marimo](https://marimo.io)._
     """)
     return
 

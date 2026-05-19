@@ -7,7 +7,6 @@ app = marimo.App(width="medium", app_title="Node embeddings")
 @app.cell
 def imports():
     import io
-    import tempfile
     import urllib.request
     from pathlib import Path
 
@@ -47,6 +46,85 @@ def imports():
         "grid.color": "#cccccc",
     })
 
+    def parse_graphml(raw_bytes):
+        """Parse a GraphML document with the stdlib XML parser.
+
+        Pyodide's python-igraph wheel is compiled without GraphML support
+        (no libxml2), so we cannot call ``ig.Graph.Read_GraphML`` in the
+        browser. This helper produces the same kind of igraph.Graph by
+        reading the GraphML XML directly.
+
+        Recognised: ``<key>`` declarations (so attribute names and types
+        survive), ``<node>`` ids and per-node ``<data>`` values, and
+        ``<edge>`` source/target pairs. Directed graphs are collapsed to
+        undirected to match the rest of the app. Self-loops and parallel
+        edges are simplified away. The original GraphML node ids are
+        preserved as ``g.vs['id']``.
+        """
+        import xml.etree.ElementTree as _ET
+
+        _root = _ET.fromstring(raw_bytes)
+        _ns = ""
+        if _root.tag.startswith("{"):
+            _ns = _root.tag[1:].split("}", 1)[0]
+        def _qn(tag): return f"{{{_ns}}}{tag}" if _ns else tag
+
+        _keys = {}
+        for _k in _root.findall(_qn("key")):
+            _keys[_k.get("id")] = {
+                "name": _k.get("attr.name", _k.get("id")),
+                "for":  _k.get("for", "node"),
+                "type": _k.get("attr.type", "string"),
+            }
+
+        _graph_el = _root.find(_qn("graph"))
+        if _graph_el is None:
+            raise ValueError("GraphML document has no <graph> element.")
+        _is_directed = (_graph_el.get("edgedefault", "undirected") == "directed")
+
+        _node_ids, _id_to_idx, _node_attrs = [], {}, {}
+        for _n in _graph_el.findall(_qn("node")):
+            _gid = _n.get("id")
+            _idx = len(_node_ids)
+            _id_to_idx[_gid] = _idx
+            _node_ids.append(_gid)
+            for _kid, _info in _keys.items():
+                if _info["for"] == "node":
+                    _node_attrs.setdefault(_info["name"], []).append(None)
+            for _d in _n.findall(_qn("data")):
+                _kid = _d.get("key")
+                if _kid not in _keys:
+                    continue
+                _info = _keys[_kid]
+                if _info["for"] != "node":
+                    continue
+                _val = (_d.text or "").strip()
+                _t = _info["type"]
+                if _t in ("int", "integer", "long"):
+                    try: _val = int(_val)
+                    except ValueError: pass
+                elif _t in ("float", "double"):
+                    try: _val = float(_val)
+                    except ValueError: pass
+                elif _t in ("bool", "boolean"):
+                    _val = _val.strip().lower() in ("true", "1", "yes")
+                _node_attrs[_info["name"]][_idx] = _val
+
+        _edges = []
+        for _e in _graph_el.findall(_qn("edge")):
+            _s = _e.get("source"); _t = _e.get("target")
+            if _s in _id_to_idx and _t in _id_to_idx and _s != _t:
+                _edges.append((_id_to_idx[_s], _id_to_idx[_t]))
+
+        _g = ig.Graph(n=len(_node_ids), edges=_edges, directed=_is_directed)
+        if _is_directed:
+            _g = _g.as_undirected(mode="collapse")
+        _g.simplify()
+        _g.vs["id"] = _node_ids
+        for _name, _vals in _node_attrs.items():
+            _g.vs[_name] = _vals
+        return _g
+
     def _load_public_bytes(filename):
         """Read bytes from public/<filename>, working both locally and in WASM.
 
@@ -70,15 +148,10 @@ def imports():
     def load_graphml(filename):
         """Return an igraph Graph from public/<filename>.
 
-        ``ig.Graph.Read_GraphML`` requires a filesystem path, so in WASM we
-        materialise the fetched bytes into a temporary file under /tmp
-        (which Pyodide does support).
+        Uses the in-app GraphML parser because Pyodide's igraph wheel ships
+        without GraphML support.
         """
-        raw = _load_public_bytes(filename)
-        with tempfile.NamedTemporaryFile(suffix=".graphml", delete=False) as tmp:
-            tmp.write(raw)
-            tmp_path = tmp.name
-        return ig.Graph.Read_GraphML(tmp_path)
+        return parse_graphml(_load_public_bytes(filename))
 
     def load_npy(filename):
         return np.load(io.BytesIO(_load_public_bytes(filename)))
@@ -99,6 +172,7 @@ def imports():
         load_graphml,
         load_npy,
         load_npz,
+        parse_graphml,
         accuracy_score,
         classification_report,
         confusion_matrix,
@@ -202,9 +276,7 @@ def sec1_header(mo):
 
 
 @app.cell
-def build_graph(load_graphml, dataset_choice, ig, io, np, pd, upload):
-    import tempfile as _tempfile
-
+def build_graph(load_graphml, parse_graphml, dataset_choice, ig, io, np, pd, upload):
     # The classic Zachary faction assignment (Zachary 1977).
     _zachary_factions = np.array([
         0, 0, 0, 0, 0, 0, 0, 0, 1, 1,
@@ -243,16 +315,9 @@ def build_graph(load_graphml, dataset_choice, ig, io, np, pd, upload):
         _fname = (_file.name or "").lower()
         try:
             if _fname.endswith(".graphml") or _fname.endswith(".xml"):
-                # GraphML upload: igraph wants a path, so stage to /tmp.
-                with _tempfile.NamedTemporaryFile(
-                    suffix=".graphml", delete=False
-                ) as _tmp:
-                    _tmp.write(_raw)
-                    _tmp_path = _tmp.name
-                _g = ig.Graph.Read_GraphML(_tmp_path)
-                if _g.is_directed():
-                    _g = _g.as_undirected(mode="collapse")
-                _g.simplify()
+                # GraphML upload: use the stdlib-XML parser (Pyodide's
+                # python-igraph wheel has no GraphML support).
+                _g = parse_graphml(_raw)
                 # Names: prefer 'name', then 'id', else integer indices.
                 if "name" in _g.vs.attributes():
                     _g.vs["name"] = [str(x) for x in _g.vs["name"]]

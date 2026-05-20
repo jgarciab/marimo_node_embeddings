@@ -44,6 +44,14 @@ def imports():
         "axes.grid": True,
         "grid.alpha": 0.25,
         "grid.color": "#cccccc",
+        # No surrounding "axis box" on any plot. Curves with meaningful
+        # axes (Section 4 accuracy) still show their tick marks and
+        # labels; PCA / network / walk plots additionally clear ticks
+        # in their own cells, so the panels read as pure scatter.
+        "axes.spines.top": False,
+        "axes.spines.right": False,
+        "axes.spines.left": False,
+        "axes.spines.bottom": False,
     })
 
     def parse_graphml(raw_bytes):
@@ -197,6 +205,23 @@ def imports():
             return [KARATE_FACTIONS.get(c, f"class {c}") for c in classes]
         return [str(c) for c in classes]
 
+    def style_minimal(ax, no_ticks=False):
+        """Strip the surrounding spines (the black axis box).
+
+        Pass ``no_ticks=True`` for plots whose x/y axes have no physical
+        meaning (PCAs, network layouts) — that also clears the tick marks
+        and tick labels. Curves with meaningful axes (e.g. accuracy vs.
+        epoch) leave the ticks in place and just lose the surrounding
+        box.
+        """
+        for _s in ax.spines.values():
+            _s.set_visible(False)
+        if no_ticks:
+            ax.set_xticks([])
+            ax.set_yticks([])
+            ax.set_xlabel("")
+            ax.set_ylabel("")
+
     def procrustes_align(coords_2d, anchor_idx, anchor_targets):
         """Find the rotation + reflection + uniform scale that best maps
         ``coords_2d[anchor_idx]`` onto ``anchor_targets`` (3×2). Apply
@@ -270,6 +295,7 @@ def imports():
         load_npz,
         parse_graphml,
         procrustes_align,
+        style_minimal,
         accuracy_score,
         classification_report,
         confusion_matrix,

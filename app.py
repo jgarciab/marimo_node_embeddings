@@ -18,6 +18,7 @@ def imports():
     from matplotlib.collections import LineCollection
     import igraph as ig
 
+    from sklearn.cluster import KMeans
     from sklearn.decomposition import PCA, TruncatedSVD
     from sklearn.linear_model import LogisticRegression
     from sklearn.metrics import (
@@ -262,6 +263,28 @@ def imports():
         s = float(S.sum() / src_norm_sq) if src_norm_sq > 1e-12 else 1.0
         return (src - src_mean) @ (R * s) + tgt_mean
 
+    def network_with_cluster_colors(ax, g, coords, edges_iter, cluster_ids,
+                                    palette, struct_anchors=None,
+                                    title=None, alpha_edges=0.4):
+        """Draw the network laid out by FR with node colours coming from
+        a k-means clustering of an embedding (à la Fig 3 of the node2vec
+        paper). Anchor nodes get a gold star + label."""
+        from matplotlib.collections import LineCollection as _LC
+        ax.set_facecolor("white")
+        _segs = [[coords[e.source], coords[e.target]] for e in edges_iter]
+        ax.add_collection(_LC(_segs, colors="#dddddd", linewidths=0.5,
+                              alpha=alpha_edges, zorder=1))
+        _colors = [palette[int(c) % len(palette)] for c in cluster_ids]
+        ax.scatter(coords[:, 0], coords[:, 1], s=45, c=_colors,
+                   edgecolor="#333333", linewidth=0.4, zorder=2)
+        if struct_anchors:
+            for _i in struct_anchors:
+                ax.scatter(coords[_i, 0], coords[_i, 1], s=180, marker="*",
+                           facecolor="gold", edgecolor="black", linewidth=1.0, zorder=5)
+        ax.set_xticks([]); ax.set_yticks([]); ax.grid(False); ax.set_aspect("equal")
+        if title:
+            ax.set_title(title, fontsize=10)
+
     def biased_walk(graph, start, length, p, q, rng):
         """One node2vec random walk: bias `1/p` to return to the previous
         node, `1` to step to a distance-1 neighbour, `1/q` to step to a
@@ -298,6 +321,7 @@ def imports():
     return (
         FOOTBALL_CONFERENCES,
         KARATE_FACTIONS,
+        KMeans,
         LineCollection,
         LogisticRegression,
         PALETTE,
@@ -308,6 +332,7 @@ def imports():
         load_graphml,
         load_npy,
         load_npz,
+        network_with_cluster_colors,
         parse_graphml,
         procrustes_align,
         style_minimal,
@@ -863,13 +888,17 @@ def compute_spectral(PCA, TruncatedSVD, graph_data, mo, np):
 
 @app.cell
 def plot_spectral(
-    PALETTE, graph_data, layout_data, np, plt, procrustes_align, silhouette_score, spectral_embs
+    KMeans, PALETTE, graph_data, layout_data, network_with_cluster_colors, np, plt,
+    procrustes_align, silhouette_score, spectral_embs, struct_anchors,
 ):
     _labels = graph_data["labels"]
     _anchor_idx = layout_data["anchor_idx"]
     _anchor_targets = layout_data["anchor_targets"]
-    _fig, _axes = plt.subplots(1, 3, figsize=(14.5, 4.8))
-    for _ax, (_name, _emb) in zip(_axes, spectral_embs.items()):
+    _coords = layout_data["coords"]
+    _g = graph_data["graph"]
+    _n_classes = len(set(int(c) for c in _labels)) if _labels is not None else 4
+    _fig, _axes = plt.subplots(2, 3, figsize=(14.5, 9.0), height_ratios=[1, 1])
+    for _ax, (_name, _emb) in zip(_axes[0], spectral_embs.items()):
         # Plot the first two raw dimensions of each method, honestly.
         # For SVD-of-A this means dim 0 is roughly degree (the
         # Perron-Frobenius eigenvector); the SVD panel therefore looks
@@ -906,6 +935,18 @@ def plot_spectral(
             fontsize=10,
             bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="#888888", alpha=0.9),
         )
+    # Bottom row: same network laid out by FR, coloured by k-means on
+    # each embedding. The clusters should look like the true community
+    # palette for methods that capture homophily, and cut across
+    # communities for methods that don't.
+    if _g is not None and _coords is not None and _n_classes >= 2:
+        for _ax, (_name, _emb) in zip(_axes[1], spectral_embs.items()):
+            _km = KMeans(n_clusters=_n_classes, n_init=10, random_state=1546).fit(_emb)
+            network_with_cluster_colors(
+                _ax, _g, _coords, _g.es, _km.labels_,
+                PALETTE, struct_anchors=struct_anchors,
+                title=f"network coloured by k-means on {_name.split('(')[0].strip()}",
+            )
     _fig.tight_layout()
     _fig
     return
@@ -1082,25 +1123,33 @@ def sec3_n2v_intro(graph_data, mo):
           hubs from different communities end up looking alike →
           **structural roles**.
 
-        _The scatters use **t-SNE** rather than a flat PCA projection,
-        because the three embeddings share most of their global
-        structure on this graph and a linear projection makes them
-        look identical. t-SNE keeps local geometry, where the actual
-        contrast lives._
+        _Top row_: 2-d **t-SNE** of each 32-d embedding (linear
+        projections look near-identical here; t-SNE preserves local
+        geometry where the actual contrast lives).
 
-        **★ Watch the three gold stars.** They are the highest-degree
-        node in three *different* classes — so they share a
-        **structural role** (each is a hub in its corner of the graph)
-        but live in different communities. The "**hub pull**" number
-        under each panel measures how close those three end up in the
-        embedding compared with three random nodes:
+        _Bottom row_: the **same network laid out as in Section 1**,
+        but coloured by **k-means on each embedding** instead of the
+        true labels — exactly as in Figure 3 of the node2vec paper
+        (Grover & Leskovec 2016). For a homophily embedding the
+        colours should *match* the community palette from Section 1;
+        for a structural-role embedding they should *cut across*
+        communities — bridges in different parts of the graph end up
+        the same colour.
 
-        - values **below 1** → hubs are pulled *together* (the
-          embedding sees them as structurally similar, regardless of
+        **★ Watch the three gold stars.** They are the
+        highest-**betweenness** node in three different classes — i.e.
+        three "bridges" between communities. Bridges have a similar
+        structural role even though they live in different parts of
+        the network. The "**hub pull**" number under each panel
+        measures how close those three end up in the embedding
+        compared with three random nodes:
+
+        - values **below 1** → bridges are pulled *together* (the
+          embedding sees them as structurally similar regardless of
           community); this is the **BFS / structural** signature.
-        - values **above 1** → hubs are pushed *apart* (the embedding
-          has organised them by community); this is the **DFS /
-          homophily** signature.
+        - values **above 1** → bridges are pushed *apart* (the
+          embedding has organised them by community); this is the
+          **DFS / homophily** signature.
         """)
     return
 
@@ -1125,16 +1174,21 @@ def load_n2v_all(load_npy, graph_data):
 
 @app.cell
 def select_structural_anchors(graph_data, np):
-    """Pick a few nodes that have *similar structural role* (high degree)
-    but live in *different classes*. In a depth-first node2vec they will
-    sit inside their own class cluster; in a breadth-first one they will
-    drift together because they all see a hub-like neighbourhood."""
+    """Pick a few nodes that have *similar structural role* (high
+    betweenness — they sit on shortcuts between communities) but live
+    in *different classes*. High-betweenness nodes are the canonical
+    'bridges' of a network: they have a comparable structural job
+    even when they live in different parts of the graph. On football
+    this picks up Notre Dame (an Independent — a literal cross-
+    conference bridge); on Les Mis it picks up Valjean, Myriel, and
+    Gavroche — the three characters who connect the most disparate
+    parts of the novel."""
     _g = graph_data["graph"]
     _labels = graph_data["labels"]
     if _g is None or _labels is None:
         struct_anchors = []
     else:
-        _deg = np.array(_g.degree())
+        _bet = np.array(_g.betweenness())
         _classes = sorted(set(int(c) for c in _labels))
         _candidates = []
         for _c in _classes:
@@ -1142,8 +1196,8 @@ def select_structural_anchors(graph_data, np):
             _idx = np.where(_mask)[0]
             if len(_idx) == 0:
                 continue
-            _best = int(_idx[np.argmax(_deg[_idx])])
-            _candidates.append((_best, int(_deg[_best])))
+            _best = int(_idx[np.argmax(_bet[_idx])])
+            _candidates.append((_best, float(_bet[_best])))
         _candidates.sort(key=lambda x: -x[1])
         struct_anchors = [c[0] for c in _candidates[: min(3, len(_candidates))]]
     return (struct_anchors,)
@@ -1151,13 +1205,17 @@ def select_structural_anchors(graph_data, np):
 
 @app.cell
 def plot_n2v_all(
-    PALETTE, graph_data, mo, n2v_embs, np, plt, silhouette_score, struct_anchors
+    KMeans, PALETTE, graph_data, layout_data, mo, n2v_embs,
+    network_with_cluster_colors, np, plt, silhouette_score, struct_anchors,
 ):
     from sklearn.manifold import TSNE
 
     mo.stop(n2v_embs is None, mo.md(""))
     _labels = graph_data["labels"]
     _names = graph_data["names"]
+    _coords = layout_data["coords"]
+    _g = graph_data["graph"]
+    _n_classes = len(set(int(c) for c in _labels)) if _labels is not None else 4
 
     def _hub_ratio(_emb_arr):
         """Mean pairwise distance among the struct_anchor nodes, divided
@@ -1181,8 +1239,8 @@ def plot_n2v_all(
                                           for j in range(i + 1, len(_es))])))
         return _da / float(np.mean(_bases))
 
-    _fig, _axes = plt.subplots(1, 3, figsize=(14.5, 4.8))
-    for _ax, (_name, _emb) in zip(_axes, n2v_embs.items()):
+    _fig, _axes = plt.subplots(2, 3, figsize=(14.5, 9.0), height_ratios=[1, 1])
+    for _ax, (_name, _emb) in zip(_axes[0], n2v_embs.items()):
         # The three n2v variants share most of their dominant variance
         # directions on football (principal angles between top-5 subspaces
         # ~10°), so a 2-d *linear* projection ends up looking nearly
@@ -1238,6 +1296,21 @@ def plot_n2v_all(
             fontsize=10,
             bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="#888888", alpha=0.9),
         )
+    # Bottom row: the network laid out by FR, coloured by k-means on
+    # each embedding (Fig 3 of Grover-Leskovec 2016). Homophily-flavoured
+    # embeddings produce clusters that line up with the true communities;
+    # structural-role-flavoured embeddings produce clusters that *cut
+    # across* communities — anchors with similar roles end up in the
+    # same colour even when they live far apart on the network.
+    if _g is not None and _coords is not None and _n_classes >= 2:
+        for _ax, (_name, _emb) in zip(_axes[1], n2v_embs.items()):
+            _km = KMeans(n_clusters=_n_classes, n_init=10, random_state=1546).fit(_emb)
+            _short = _name.split("(")[0].strip().split("\n")[0]
+            network_with_cluster_colors(
+                _ax, _g, _coords, _g.es, _km.labels_,
+                PALETTE, struct_anchors=struct_anchors,
+                title=f"network coloured by k-means · {_short}",
+            )
     _fig.tight_layout()
     _fig
     return

@@ -984,6 +984,12 @@ def sec3_n2v_intro(graph_data, mo):
         - **$p = 0.25,\ q = 10$** — very breadth-first: small $p$
           encourages return, large $q$ keeps the walk close to where it
           started → embedding captures **structural roles**.
+
+        _The scatters are 2-d **t-SNE** projections of the 32-d vectors
+        (not PCA): linear projections collapse onto the shared dominant
+        directions and look near-identical across the three settings,
+        while t-SNE preserves local cluster geometry where the contrast
+        between depth-first, balanced, and breadth-first walks lives._
         """)
     return
 
@@ -1007,19 +1013,27 @@ def load_n2v_all(load_npy, graph_data):
 
 
 @app.cell
-def plot_n2v_all(
-    PALETTE, PCA, graph_data, layout_data, mo, n2v_embs, np, plt, procrustes_align, silhouette_score
-):
+def plot_n2v_all(PALETTE, graph_data, mo, n2v_embs, np, plt, silhouette_score):
+    from sklearn.manifold import TSNE
+
     mo.stop(n2v_embs is None, mo.md(""))
     _labels = graph_data["labels"]
-    _anchor_idx = layout_data["anchor_idx"]
-    _anchor_targets = layout_data["anchor_targets"]
     _fig, _axes = plt.subplots(1, 3, figsize=(14.5, 4.8))
     for _ax, (_name, _emb) in zip(_axes, n2v_embs.items()):
-        _emb2 = PCA(n_components=2, random_state=1546).fit_transform(_emb)
+        # The three n2v variants share most of their dominant variance
+        # directions on football (principal angles between top-5 subspaces
+        # ~10°), so a 2-d *linear* projection ends up looking nearly
+        # identical across panels. t-SNE preserves *local* geometry
+        # instead, which is where the contrast between depth-first,
+        # balanced, and breadth-first walks actually lives.
+        _n = _emb.shape[0]
+        _perp = max(5, min(30, _n // 4))
+        _tsne = TSNE(
+            n_components=2, perplexity=_perp, random_state=1546,
+            init="pca", learning_rate="auto",
+        )
+        _emb2 = _tsne.fit_transform(_emb)
         _emb2 = (_emb2 - _emb2.mean(axis=0)) / (_emb2.std(axis=0) + 1e-12)
-        if _anchor_idx is not None and _anchor_targets is not None:
-            _emb2 = procrustes_align(_emb2, _anchor_idx, _anchor_targets)
         if _labels is not None:
             _colors = [PALETTE[int(c) % len(PALETTE)] for c in _labels]
         else:

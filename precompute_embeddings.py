@@ -76,8 +76,8 @@ def run_node2vec(p: float, q: float, out_path: Path) -> np.ndarray:
     n2v = Node2Vec(
         G,
         dimensions=32,
-        walk_length=20,
-        num_walks=10,
+        walk_length=40,
+        num_walks=20,
         p=p,
         q=q,
         workers=1,
@@ -95,9 +95,13 @@ def run_node2vec(p: float, q: float, out_path: Path) -> np.ndarray:
 
 
 if RUN in ("all", "node2vec"):
-    run_node2vec(1.0, 0.25, DATA / "node2vec_p1_q0.25.npy")
-    run_node2vec(1.0, 1.0, DATA / "node2vec_p1_q1.npy")
-    run_node2vec(1.0, 4.0, DATA / "node2vec_p1_q4.npy")
+    # Wide-open q sweep so the three panels actually look different.
+    # Also vary p to amplify the homophily-vs-structural contrast at the
+    # extremes: large p discourages return (pushes outward), small p
+    # encourages it (keeps walks local).
+    run_node2vec(4.0,  0.1,  DATA / "node2vec_dfs.npy")    # very DFS / homophily
+    run_node2vec(1.0,  1.0,  DATA / "node2vec_balanced.npy")
+    run_node2vec(0.25, 10.0, DATA / "node2vec_bfs.npy")    # very BFS / structural
 else:
     print(f"skipping node2vec (only={RUN})")
 
@@ -319,7 +323,7 @@ if RUN in ("all", "karate"):
     def run_node2vec_k(p: float, q: float, out_path: Path) -> None:
         print(f"  karate node2vec p={p}, q={q} ...")
         n2v = Node2Vec(
-            G_k, dimensions=32, walk_length=10, num_walks=20,
+            G_k, dimensions=32, walk_length=20, num_walks=40,
             p=p, q=q, workers=1, seed=SEED, quiet=True,
         )
         model = n2v.fit(window=5, min_count=1, batch_words=4, seed=SEED, workers=1)
@@ -330,9 +334,9 @@ if RUN in ("all", "karate"):
         sil = silhouette_score(emb, labels_k)
         print(f"    saved {out_path.name}  shape={emb.shape}  silhouette={sil:.3f}")
 
-    run_node2vec_k(1.0, 0.25, DATA / "karate_node2vec_p1_q0.25.npy")
-    run_node2vec_k(1.0, 1.0, DATA / "karate_node2vec_p1_q1.npy")
-    run_node2vec_k(1.0, 4.0, DATA / "karate_node2vec_p1_q4.npy")
+    run_node2vec_k(4.0,  0.1,  DATA / "karate_node2vec_dfs.npy")
+    run_node2vec_k(1.0,  1.0,  DATA / "karate_node2vec_balanced.npy")
+    run_node2vec_k(0.25, 10.0, DATA / "karate_node2vec_bfs.npy")
 
     # Supervised GraphSAGE for karate
     print("  karate graphsage (supervised) ...")

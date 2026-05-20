@@ -740,9 +740,19 @@ def compute_spectral(PCA, TruncatedSVD, graph_data, mo, np):
     _svd = TruncatedSVD(n_components=_k, random_state=1546)
     _emb_svd = _svd.fit_transform(_A)
 
+    # Laplacian Eigenmaps: use the *symmetric normalised* Laplacian
+    # L_sym = I - D^{-1/2} A D^{-1/2}. This is the canonical choice for
+    # community detection (Shi & Malik 1997, Ng-Jordan-Weiss 2002) and
+    # gives much better small-class recall than the raw L = D - A.
+    # np.linalg.eigh returns eigenvalues in ascending order, so columns
+    # 1..k are the bottom-k non-trivial eigenvectors.
     _deg = _A.sum(axis=1)
-    _L = np.diag(_deg) - _A
-    _w, _v = np.linalg.eigh(_L)
+    _d_inv_sqrt = np.zeros_like(_deg)
+    _nz = _deg > 0
+    _d_inv_sqrt[_nz] = 1.0 / np.sqrt(_deg[_nz])
+    _A_norm = _A * _d_inv_sqrt[:, None] * _d_inv_sqrt[None, :]
+    _L_sym = np.eye(_n) - _A_norm
+    _w, _v = np.linalg.eigh(_L_sym)
     _emb_lap = _v[:, 1 : _k + 1]
 
     _pca = PCA(n_components=_k, random_state=1546)
@@ -750,24 +760,31 @@ def compute_spectral(PCA, TruncatedSVD, graph_data, mo, np):
 
     spectral_embs = {
         "Truncated SVD (of A)": np.asarray(_emb_svd, dtype=float),
-        "Laplacian Eigenmaps (of L)": np.asarray(_emb_lap, dtype=float),
+        "Laplacian Eigenmaps (of L_sym)": np.asarray(_emb_lap, dtype=float),
         "PCA (of A)": np.asarray(_emb_pca, dtype=float),
     }
     # "Primary" spectral embedding used downstream (Section 5).
-    spectral_emb = spectral_embs["Laplacian Eigenmaps (of L)"]
+    spectral_emb = spectral_embs["Laplacian Eigenmaps (of L_sym)"]
     return spectral_emb, spectral_embs
 
 
 @app.cell
 def plot_spectral(
-    PALETTE, PCA, graph_data, layout_data, plt, procrustes_align, silhouette_score, spectral_embs
+    PALETTE, graph_data, layout_data, plt, procrustes_align, silhouette_score, spectral_embs
 ):
     _labels = graph_data["labels"]
     _anchor_idx = layout_data["anchor_idx"]
     _anchor_targets = layout_data["anchor_targets"]
     _fig, _axes = plt.subplots(1, 3, figsize=(14.5, 4.8))
     for _ax, (_name, _emb) in zip(_axes, spectral_embs.items()):
-        _emb2 = PCA(n_components=2, random_state=1546).fit_transform(_emb)
+        # Spectral methods produce columns *already ordered by importance*
+        # (singular values for SVD/PCA, ascending eigenvalues for the
+        # Laplacian). PCA of these orthonormal columns washes that
+        # ordering out and produces a meaningless rotation, so we plot
+        # the first two raw dimensions directly. The Fiedler vector
+        # (Laplacian column 0) is what carries the dominant community
+        # cut, which is what we want to see in 2-d.
+        _emb2 = _emb[:, :2]
         if _anchor_idx is not None and _anchor_targets is not None:
             _emb2 = procrustes_align(_emb2, _anchor_idx, _anchor_targets)
         if _labels is not None:
@@ -949,14 +966,22 @@ def sec3_n2v_intro(graph_data, mo):
         )
     else:
         mo.md(r"""
-        ### node2vec embeddings at three extreme $q$ settings
+        ### node2vec embeddings at three extreme settings
 
         Repeat the kind of biased walk above many times from every node,
         feed the corpus of walks into word2vec, and you get a 32-d
         vector per node. Below: precomputed node2vec embeddings on this
-        graph for **$q = 0.25$**, **$q = 1$**, and **$q = 4$**, all at
-        $p = 1$. The scatters are 2-d PCAs of the 32-d vectors, rotated
-        and scaled to the network layout.
+        graph at three corners of the $(p, q)$ plane. We push both
+        parameters at once to make the contrast as visible as possible:
+
+        - **$p = 4,\ q = 0.1$** — very depth-first: large $p$ discourages
+          return, tiny $q$ pulls toward distance-2 neighbours, so walks
+          stay inside the same community → embedding captures
+          **homophily**.
+        - **$p = 1,\ q = 1$** — neutral / vanilla random walk.
+        - **$p = 0.25,\ q = 10$** — very breadth-first: small $p$
+          encourages return, large $q$ keeps the walk close to where it
+          started → embedding captures **structural roles**.
         """)
     return
 
@@ -969,12 +994,12 @@ def load_n2v_all(load_npy, graph_data):
         n2v_embs = None
     else:
         n2v_embs = {
-            "p=1, q=0.25 (homophily, DFS)":
-                load_npy(f"{_prefix}node2vec_p1_q0.25.npy"),
-            "p=1, q=1 (balanced)":
-                load_npy(f"{_prefix}node2vec_p1_q1.npy"),
-            "p=1, q=4 (structural, BFS)":
-                load_npy(f"{_prefix}node2vec_p1_q4.npy"),
+            "p=4, q=0.1 — very DFS (homophily)":
+                load_npy(f"{_prefix}node2vec_dfs.npy"),
+            "p=1, q=1 — balanced":
+                load_npy(f"{_prefix}node2vec_balanced.npy"),
+            "p=0.25, q=10 — very BFS (structural)":
+                load_npy(f"{_prefix}node2vec_bfs.npy"),
         }
     return (n2v_embs,)
 
@@ -1406,9 +1431,9 @@ def classify_all(
         _methods.append((f"Spectral · {_name}", _emb))
     if _prefix is not None:
         for _q_label, _file in [
-            ("node2vec (p=1, q=0.25)", "node2vec_p1_q0.25.npy"),
-            ("node2vec (p=1, q=1)",    "node2vec_p1_q1.npy"),
-            ("node2vec (p=1, q=4)",    "node2vec_p1_q4.npy"),
+            ("node2vec — DFS (p=4, q=0.1)",      "node2vec_dfs.npy"),
+            ("node2vec — balanced (p=1, q=1)",   "node2vec_balanced.npy"),
+            ("node2vec — BFS (p=0.25, q=10)",    "node2vec_bfs.npy"),
         ]:
             _methods.append((_q_label, load_npy(f"{_prefix}{_file}")))
     if gnn is not None:

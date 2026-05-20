@@ -706,27 +706,31 @@ def sec2_header(mo):
     Three classics, side by side on the same network:
 
     - **Truncated SVD of $A$**: the top singular vectors of the
-      adjacency, with the **trivial degree component dropped**. By
-      Perron-Frobenius, the very top singular vector of any non-negative
-      matrix has all-positive entries; on a near-regular graph like
-      football it correlates ~0.75 with node degree, carries no
-      community information, and is therefore discarded.
+      adjacency. The very top singular vector is **Perron-Frobenius**
+      (non-negative matrices always have a positive top eigenvector);
+      on a near-regular graph like football it correlates ~0.75 with
+      node degree and carries no community information. We keep it in
+      the embedding (the classifier ignores it anyway) but skip it in
+      the panel below — plotting it would collapse the SVD scatter to
+      a degree axis.
     - **Laplacian Eigenmaps**: the smallest non-trivial eigenvectors of
       $L_{\text{sym}} = I - D^{-1/2} A D^{-1/2}$. This is what classical
       spectral clustering uses (Shi-Malik 1997, Ng-Jordan-Weiss 2002).
     - **PCA of $A$**: principal components of the adjacency rows. PCA
       centres $A$ before SVD-ing it, which **automatically removes the
-      Perron-Frobenius / degree component** — so after our explicit drop
-      above, SVD-of-$A$ and PCA-of-$A$ are mathematically the same
-      thing, and the two panels should look identical.
+      Perron-Frobenius component** — i.e. PCA-of-$A$ is just SVD-of-$A$
+      with that trivial degree direction dropped, which is exactly why
+      its panel looks like the SVD panel here (we already skipped col 0
+      of SVD in the viz).
 
-    Each is computed in **$k \approx 2 \times \text{n\_classes}$**
-    dimensions (capped at 16) — the canonical "$k \approx $ number of
-    clusters" rule from spectral clustering. Pushing $k$ higher adds
-    noisy high-frequency eigenvectors that hurt Laplacian Eigenmaps in
-    particular. The scatter shows the first two dimensions of each
-    embedding, rotated and scaled to share an orientation with the
-    network layout above.
+    Each method has its own sweet spot for dimensionality. SVD and PCA
+    keep gaining signal with more components, so we use **$k = 32$**
+    for them. Laplacian Eigenmaps is different: it captures community
+    structure in its *low-frequency* eigenvectors, and the higher ones
+    are essentially noise on a 12-class graph — so we cap it at
+    **$k \approx 2\times\text{n\_classes}$ (max 16)**, the canonical
+    "$k \sim$ number of clusters" rule from spectral clustering. Pushing
+    LE to 32 dimensions would drop its F1 from ~0.88 to ~0.83.
 
     > **Reading the silhouette score.** For every node, silhouette
     > compares its average distance to other nodes **in its own class**
@@ -749,35 +753,33 @@ def compute_spectral(PCA, TruncatedSVD, graph_data, mo, np):
     _A = np.array(_g.get_adjacency().data, dtype=float)
     _n = _A.shape[0]
 
-    # Pick the spectral dimension adaptively:
-    #   k = min(16, 2 * n_classes) when we know the number of classes,
-    #   otherwise a flat k = 16.
-    # On the football data, all three spectral methods peak around
-    # k = 12-16; pushing k toward 32 adds noisy high-frequency
-    # eigenvectors and hurts Laplacian Eigenmaps in particular. This is
-    # the canonical "k ~ number of clusters" rule from spectral
-    # clustering (Shi-Malik 1997, von Luxburg 2007).
+    # Each spectral method has its own sweet spot, so we use different
+    # k's. SVD-of-A and PCA-of-A keep gaining signal with more dims
+    # (they're general-purpose dimensionality reductions); Laplacian
+    # Eigenmaps peaks around k ~ number of clusters - beyond that the
+    # high-frequency Laplacian eigenvectors are essentially noise and
+    # the embedding *degrades*. This is the canonical "k ~ #clusters"
+    # rule from spectral clustering (Shi-Malik 1997, von Luxburg 2007).
+    _k_full = min(32, _n - 1)        # for SVD / PCA: more dims help
     if graph_data.get("classes_available") and graph_data["labels"] is not None:
         _n_classes = len(set(int(c) for c in graph_data["labels"]))
-        _k = min(16, max(4, 2 * _n_classes), _n - 1)
+        _k_lap = min(16, max(4, 2 * _n_classes), _n - 1)
     else:
-        _k = min(16, _n - 1)
+        _k_lap = min(16, _n - 1)      # for LE: k tied to #clusters
 
-    # Truncated SVD of A: the top singular vector of any non-negative
-    # matrix is Perron-Frobenius — on a near-regular graph it is roughly
-    # constant and correlates ~0.75 with degree centrality. It carries
-    # no community information (every conference has nodes of similar
-    # degree), so we drop it. After this drop, SVD-of-A is mathematically
-    # identical to PCA-of-A (PCA achieves the same thing by centering
-    # the matrix first).
-    _svd = TruncatedSVD(n_components=_k + 1, random_state=1546)
-    _emb_svd = _svd.fit_transform(_A)[:, 1:]
+    # Truncated SVD of A. We keep all k components, including the top
+    # singular vector. That top vector is Perron-Frobenius - on a near-
+    # regular graph it correlates ~0.75 with degree centrality - but
+    # the downstream classifier ignores it (degree doesn't separate
+    # conferences), so it doesn't hurt F1 and it lets the SVD panel
+    # stay visibly different from the centered PCA panel.
+    _svd = TruncatedSVD(n_components=_k_full, random_state=1546)
+    _emb_svd = _svd.fit_transform(_A)
 
-    # Laplacian Eigenmaps: use the *symmetric normalised* Laplacian
-    # L_sym = I - D^{-1/2} A D^{-1/2} - canonical choice for community
-    # detection (Shi-Malik 1997, Ng-Jordan-Weiss 2002). np.linalg.eigh
-    # returns eigenvalues in ascending order, so cols 1..k are the
-    # bottom-k non-trivial eigenvectors.
+    # Laplacian Eigenmaps with the symmetric normalised Laplacian
+    # L_sym = I - D^{-1/2} A D^{-1/2} (Shi-Malik 1997, Ng-Jordan-Weiss
+    # 2002). np.linalg.eigh returns ascending eigenvalues, so cols
+    # 1..k are the bottom-k non-trivial eigenvectors.
     _deg = _A.sum(axis=1)
     _d_inv_sqrt = np.zeros_like(_deg)
     _nz = _deg > 0
@@ -785,9 +787,9 @@ def compute_spectral(PCA, TruncatedSVD, graph_data, mo, np):
     _A_norm = _A * _d_inv_sqrt[:, None] * _d_inv_sqrt[None, :]
     _L_sym = np.eye(_n) - _A_norm
     _w, _v = np.linalg.eigh(_L_sym)
-    _emb_lap = _v[:, 1 : _k + 1]
+    _emb_lap = _v[:, 1 : _k_lap + 1]
 
-    _pca = PCA(n_components=_k, random_state=1546)
+    _pca = PCA(n_components=_k_full, random_state=1546)
     _emb_pca = _pca.fit_transform(_A)
 
     spectral_embs = {
@@ -797,7 +799,7 @@ def compute_spectral(PCA, TruncatedSVD, graph_data, mo, np):
     }
     # "Primary" spectral embedding used downstream (Section 5).
     spectral_emb = spectral_embs["Laplacian Eigenmaps (of L_sym)"]
-    spectral_k = _k
+    spectral_k = {"svd_pca": _k_full, "lap": _k_lap}
     return spectral_emb, spectral_embs, spectral_k
 
 
@@ -811,13 +813,18 @@ def plot_spectral(
     _fig, _axes = plt.subplots(1, 3, figsize=(14.5, 4.8))
     for _ax, (_name, _emb) in zip(_axes, spectral_embs.items()):
         # Spectral methods produce columns already ordered by importance,
-        # so we plot the first two raw dimensions directly. (The trivial
-        # Perron-Frobenius / degree column of SVD-of-A is dropped at the
-        # embedding step above, so col 0 is now meaningful for all three
-        # methods.) Z-score per axis so panels with very different scales
-        # don't collapse to a thin column under the isotropic Procrustes
-        # scale.
-        _emb2 = _emb[:, :2].astype(float)
+        # so we plot the first two raw dimensions directly. SVD-of-A's
+        # very top singular vector is Perron-Frobenius (~ degree) on a
+        # near-regular graph, so plotting it would collapse the SVD panel
+        # to a degree axis; we keep it in the *embedding* (the classifier
+        # is free to use or ignore it) but skip it in the *viz*, plotting
+        # cols 1,2 instead. LE and PCA use cols 0,1 directly. Z-score
+        # per axis keeps each panel from being squished by Procrustes's
+        # isotropic scale.
+        if _name.startswith("Truncated SVD"):
+            _emb2 = _emb[:, 1:3].astype(float)
+        else:
+            _emb2 = _emb[:, :2].astype(float)
         _emb2 = (_emb2 - _emb2.mean(axis=0)) / (_emb2.std(axis=0) + 1e-12)
         if _anchor_idx is not None and _anchor_targets is not None:
             _emb2 = procrustes_align(_emb2, _anchor_idx, _anchor_targets)
@@ -1022,6 +1029,17 @@ def sec3_n2v_intro(graph_data, mo):
         directions and look near-identical across the three settings,
         while t-SNE preserves local cluster geometry where the contrast
         between depth-first, balanced, and breadth-first walks lives._
+
+        **★ Track the three gold stars.** They are the highest-degree
+        node in three *different* classes — so they share a **structural
+        role** (hub-like) but belong to different communities. In the
+        **DFS** panel they sit inside their own colour cluster (the
+        embedding has organised them by community). As $q$ grows toward
+        **BFS**, they drift closer together regardless of colour,
+        because the walks now see their *2-hop neighbourhoods* as the
+        defining signal and these three hubs all look alike from that
+        angle. That's the homophily-vs-structural-role contrast
+        node2vec was designed to expose.
         """)
     return
 
@@ -1045,11 +1063,40 @@ def load_n2v_all(load_npy, graph_data):
 
 
 @app.cell
-def plot_n2v_all(PALETTE, graph_data, mo, n2v_embs, np, plt, silhouette_score):
+def select_structural_anchors(graph_data, np):
+    """Pick a few nodes that have *similar structural role* (high degree)
+    but live in *different classes*. In a depth-first node2vec they will
+    sit inside their own class cluster; in a breadth-first one they will
+    drift together because they all see a hub-like neighbourhood."""
+    _g = graph_data["graph"]
+    _labels = graph_data["labels"]
+    if _g is None or _labels is None:
+        struct_anchors = []
+    else:
+        _deg = np.array(_g.degree())
+        _classes = sorted(set(int(c) for c in _labels))
+        _candidates = []
+        for _c in _classes:
+            _mask = (_labels == _c)
+            _idx = np.where(_mask)[0]
+            if len(_idx) == 0:
+                continue
+            _best = int(_idx[np.argmax(_deg[_idx])])
+            _candidates.append((_best, int(_deg[_best])))
+        _candidates.sort(key=lambda x: -x[1])
+        struct_anchors = [c[0] for c in _candidates[: min(3, len(_candidates))]]
+    return (struct_anchors,)
+
+
+@app.cell
+def plot_n2v_all(
+    PALETTE, graph_data, mo, n2v_embs, np, plt, silhouette_score, struct_anchors
+):
     from sklearn.manifold import TSNE
 
     mo.stop(n2v_embs is None, mo.md(""))
     _labels = graph_data["labels"]
+    _names = graph_data["names"]
     _fig, _axes = plt.subplots(1, 3, figsize=(14.5, 4.8))
     for _ax, (_name, _emb) in zip(_axes, n2v_embs.items()):
         # The three n2v variants share most of their dominant variance
@@ -1071,6 +1118,24 @@ def plot_n2v_all(PALETTE, graph_data, mo, n2v_embs, np, plt, silhouette_score):
         else:
             _colors = ["#0b789d"] * _emb.shape[0]
         _ax.scatter(_emb2[:, 0], _emb2[:, 1], s=45, c=_colors, edgecolor="#333333", linewidth=0.4)
+        # Structural anchors: the highest-degree node from each of 3
+        # different classes. Watch them go from *inside their own colour
+        # cluster* (very DFS) to *clustered together regardless of
+        # colour* (very BFS) — that's literally the homophily-vs-
+        # structural-role contrast node2vec is supposed to expose.
+        if struct_anchors:
+            for _i in struct_anchors:
+                _ax.scatter(
+                    _emb2[_i, 0], _emb2[_i, 1], s=220, marker="*",
+                    facecolor="gold", edgecolor="black", linewidth=1.2, zorder=5,
+                )
+                _ax.annotate(
+                    str(_names[_i]),
+                    xy=(_emb2[_i, 0], _emb2[_i, 1]),
+                    xytext=(7, 7), textcoords="offset points",
+                    fontsize=7, color="#222222",
+                    bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="#888888", alpha=0.9, lw=0.5),
+                )
         _ax.set_xticks([])
         _ax.set_yticks([])
         _ax.grid(False)

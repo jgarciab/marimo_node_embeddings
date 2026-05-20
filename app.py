@@ -1062,20 +1062,25 @@ def sec3_n2v_intro(graph_data, mo):
         mo.md(r"""
         ### node2vec embeddings at three extreme settings
 
-        Repeat the kind of biased walk above many times from every node,
-        feed the corpus of walks into word2vec, and you get a 32-d
-        vector per node. Below: precomputed node2vec embeddings on this
-        graph at three corners of the $(p, q)$ plane. We push both
-        parameters at once to make the contrast as visible as possible:
+        Repeat the biased walk above many times from every node, feed
+        the corpus of walks into word2vec, and you get a 32-d vector
+        per node. Below: precomputed node2vec embeddings (using the
+        standard `gensim`-backed `node2vec` library) at three corners
+        of the parameter space. **We vary not just $p$ and $q$ but
+        also walk length** — a careful local sweep showed walk length
+        is in fact the *dominant* lever for the homophily-vs-role
+        contrast on these small graphs; $p, q$ reinforce it.
 
-        - **$p = 4,\ q = 0.1$** — very depth-first: large $p$ discourages
-          return, tiny $q$ pulls toward distance-2 neighbours, so walks
-          stay inside the same community → embedding captures
-          **homophily**.
-        - **$p = 1,\ q = 1$** — neutral / vanilla random walk.
-        - **$p = 0.25,\ q = 10$** — very breadth-first: small $p$
-          encourages return, large $q$ keeps the walk close to where it
-          started → embedding captures **structural roles**.
+        - **DFS + long walks** ($p\!=\!4,\ q\!=\!0.1,\ \ell\!=\!80$): the
+          walk roams far from the start, so the embedding learns who
+          each node's *community* is → **homophily**.
+        - **Balanced** ($p\!=\!1,\ q\!=\!1,\ \ell\!=\!20$): vanilla
+          random walks; sits in between.
+        - **BFS + very short walks** ($p\!=\!0.25,\ q\!=\!10,\ \ell\!=\!3$):
+          the walk barely leaves the start, so the embedding only
+          captures each node's *immediate degree pattern* — and two
+          hubs from different communities end up looking alike →
+          **structural roles**.
 
         _The scatters use **t-SNE** rather than a flat PCA projection,
         because the three embeddings share most of their global
@@ -1108,11 +1113,11 @@ def load_n2v_all(load_npy, graph_data):
         n2v_embs = None
     else:
         n2v_embs = {
-            "DFS-biased (p=4, q=0.1)\n→ homophily":
+            "DFS-biased + long walks\n(p=4, q=0.1, walk=80)\n→ homophily":
                 load_npy(f"{_prefix}node2vec_dfs.npy"),
-            "balanced (p=1, q=1)":
+            "balanced\n(p=1, q=1, walk=20)":
                 load_npy(f"{_prefix}node2vec_balanced.npy"),
-            "BFS-biased + short walks\n→ structural roles":
+            "BFS-biased + very short walks\n(p=0.25, q=10, walk=3)\n→ structural roles":
                 load_npy(f"{_prefix}node2vec_bfs.npy"),
         }
     return (n2v_embs,)

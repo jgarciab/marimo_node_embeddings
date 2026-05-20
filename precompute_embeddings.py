@@ -107,12 +107,21 @@ if RUN in ("all", "node2vec"):
     #     *small* window, so the embedding only sees each node's
     #     immediate 2-hop neighbourhood - and high-degree teams from
     #     different conferences end up looking alike.
+    # Picked from a more careful sweep that also varied walk_length:
+    # on football, (p, q) alone barely moved the cosine similarity
+    # between three hub-anchor nodes from three different conferences;
+    # walk_length turned out to be the dominant lever. Long walks let
+    # the faction signal dominate (hubs stay apart, anchors cos ≈ 0.3);
+    # very short walks (≤ 3 hops) keep the embedding focused on each
+    # node's immediate degree pattern, which is the same for all three
+    # hubs, so they cluster (anchors cos ≈ 0.75). The (p, q) bias
+    # reinforces that, but it is the secondary lever.
     run_node2vec(4.0,  0.1,  DATA / "node2vec_dfs.npy",
-                 walk_length=40, num_walks=20, window=5)
+                 walk_length=80, num_walks=10, window=5)
     run_node2vec(1.0,  1.0,  DATA / "node2vec_balanced.npy",
-                 walk_length=40, num_walks=20, window=5)
+                 walk_length=20, num_walks=40, window=5)
     run_node2vec(0.25, 10.0, DATA / "node2vec_bfs.npy",
-                 walk_length=8, num_walks=80, window=2)
+                 walk_length=3, num_walks=100, window=2)
 else:
     print(f"skipping node2vec (only={RUN})")
 
@@ -360,11 +369,11 @@ if RUN in ("all", "karate"):
         print(f"    saved {out_path.name}  shape={emb.shape}  silhouette={sil:.3f}")
 
     run_node2vec_k(4.0,  0.1,  DATA / "karate_node2vec_dfs.npy",
-                   walk_length=20, num_walks=40, window=5)
+                   walk_length=80, num_walks=10, window=5)
     run_node2vec_k(1.0,  1.0,  DATA / "karate_node2vec_balanced.npy",
                    walk_length=20, num_walks=40, window=5)
     run_node2vec_k(0.25, 10.0, DATA / "karate_node2vec_bfs.npy",
-                   walk_length=6, num_walks=80, window=2)
+                   walk_length=3, num_walks=100, window=2)
 
     # Supervised GraphSAGE for karate
     print("  karate graphsage (supervised) ...")
@@ -474,11 +483,11 @@ if RUN in ("all", "lesmis"):
         print(f"    saved {out_path.name}  shape={emb.shape}  silhouette={sil:.3f}")
 
     run_node2vec_lm(4.0,  0.1,  DATA / "lesmis_node2vec_dfs.npy",
-                    walk_length=40, num_walks=20, window=5)
+                    walk_length=80, num_walks=10, window=5)
     run_node2vec_lm(1.0,  1.0,  DATA / "lesmis_node2vec_balanced.npy",
-                    walk_length=40, num_walks=20, window=5)
+                    walk_length=20, num_walks=40, window=5)
     run_node2vec_lm(0.25, 10.0, DATA / "lesmis_node2vec_bfs.npy",
-                    walk_length=8, num_walks=80, window=2)
+                    walk_length=3, num_walks=100, window=2)
 
     print("  lesmis GCN (supervised) ...")
     src_lm, dst_lm = [], []

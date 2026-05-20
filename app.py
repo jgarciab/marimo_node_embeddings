@@ -1332,6 +1332,10 @@ def sec5_header(mo):
 
     The table below shows test-set **accuracy**, **macro-averaged
     precision / recall / F1**, fit for every embedding side by side.
+    The classifier is `LogisticRegression(C=10, solver="lbfgs")`; we
+    use a weaker-than-default L2 penalty (`C=10` instead of sklearn's
+    `C=1`) so the high-frequency components of the Laplacian Eigenmaps
+    are not over-regularised away — every method gets the same setting.
     """)
     return
 
@@ -1416,7 +1420,12 @@ def classify_all(
         _ytr = _labels[_train_mask]
         _Xte = _emb[_test_mask]
         _yte = _labels[_test_mask]
-        _clf = LogisticRegression(max_iter=2000, solver="lbfgs")
+        # C=10 gives weaker L2 regularisation than the sklearn default
+        # of C=1. Default-C over-penalises features that look noisy in
+        # the train sample (notably the higher-frequency Laplacian
+        # eigenvectors), so all methods - and Laplacian Eigenmaps in
+        # particular - perform substantially better here.
+        _clf = LogisticRegression(max_iter=2000, solver="lbfgs", C=10.0)
         _clf.fit(_Xtr, _ytr)
         _yhat = _clf.predict(_Xte)
         _rows.append({

@@ -327,8 +327,10 @@ def title(mo):
        Structure-only.
     2. **node2vec** — random walks fed through *word2vec*. Structure-only,
        but learned.
-    3. **GraphSAGE** — a graph neural network that we train *with* the
-       labels to predict each team's conference.
+    3. **GCN (graph convolutional network)** — a graph neural network
+       that we train *with* the labels to predict each team's
+       conference. Best-performing architecture in a local sweep over
+       SAGE / GCN / GAT × layers × hidden × dropout.
 
     Then we close the loop by asking: **how well do the two structure-only
     embeddings predict the labels** when we plug them into a plain
@@ -502,7 +504,13 @@ def build_graph(load_graphml, parse_graphml, dataset_choice, ig, io, np, pd, upl
             _err = f"Failed to read upload: {e}"
     elif _choice.startswith("Karate"):
         _g = ig.Graph.Famous("Zachary")
-        _g.vs["name"] = [f"v{i}" for i in range(_g.vcount())]
+        # Conventional names from Zachary (1977): node 0 is "Mr Hi" (the
+        # instructor) and node 33 is "Officer" (the club president). The
+        # other 32 members are anonymised - we just label them by index.
+        _karate_names = [f"v{i}" for i in range(_g.vcount())]
+        _karate_names[0] = "Mr Hi"
+        _karate_names[33] = "Officer"
+        _g.vs["name"] = _karate_names
         _labels = _zachary_factions.copy()
         _description = (
             "**Zachary karate club** (34 members, 78 ties). The classic "
@@ -705,46 +713,42 @@ def sec2_header(mo):
 
     Three classics, side by side on the same network:
 
-    - **Truncated SVD of $A$**: the top singular vectors of the
-      adjacency. By Perron-Frobenius, the very top singular vector of
-      any non-negative matrix has all-positive entries; on a
-      near-regular graph like football it correlates ~0.75 with node
-      degree, so the SVD panel's first axis looks like *degree
-      centrality*. **PCA-of-$A$ is exactly SVD-of-$A$ with that
-      Perron-Frobenius direction subtracted** — centering $A$ before
-      SVD-ing it kills the all-positive top component. As a result,
-      **SVD columns 1 and 2 are mathematically the same as PCA columns
-      0 and 1** (verified empirically: column-wise correlation 1.000).
-    - **Laplacian Eigenmaps**: the smallest non-trivial eigenvectors of
-      $L_{\text{sym}} = I - D^{-1/2} A D^{-1/2}$. This is what classical
-      spectral clustering uses (Shi-Malik 1997, Ng-Jordan-Weiss 2002).
-    - **PCA of $A$**: principal components of the adjacency rows —
-      i.e., the same SVD without the degree mode.
+    - **Truncated SVD of $A$**: the strongest connection patterns in
+      the adjacency matrix. The very first one on a near-regular graph
+      like football is basically *node degree* — every team plays
+      roughly ten games, so "how many games does this team play" is the
+      single biggest pattern. That's why the SVD panel below has a
+      degree-shaped first axis.
+    - **PCA of $A$**: the same idea, but PCA *centres* the data first.
+      Centering subtracts out the "everyone plays ~10 games" baseline,
+      which removes that degree mode. So **PCA-of-$A$ is exactly the
+      same as SVD-of-$A$ with its first (degree) component dropped** —
+      we verified that the SVD's second and third columns match PCA's
+      first and second columns almost perfectly.
+    - **Laplacian Eigenmaps**: the smoothest variations across the
+      graph. The matrix $L_{\text{sym}} = I - D^{-1/2} A D^{-1/2}$ is
+      the *normalised* Laplacian (degree-corrected); its smallest
+      eigenvectors are the patterns that change *least* between
+      neighbours — and that is exactly what a community label looks
+      like (roughly constant within a community, varying between them).
+      This is what classical spectral clustering uses.
 
     Each method has its own sweet spot for dimensionality, and the two
-    families behave in **opposite ways** when you give them more
+    families behave in **opposite ways** as you give them more
     components:
 
-    - **SVD and PCA: more dims → better signal.** Every singular vector
-      of $A$ is a real direction of variation in how nodes connect —
-      community, role, brokerage, neighbourhood shape, anything. None
-      of them is noise. Doubling the dimension just hands the classifier
-      more genuine features. We use **$k = 32$** for SVD/PCA.
-    - **Laplacian Eigenmaps: more dims → more noise.** The Laplacian's
-      eigenvectors are ranked by **frequency**: small eigenvalues are
-      *smooth* functions on the graph (roughly constant within a
-      community, varying between them — exactly what a class indicator
-      looks like); large eigenvalues are *rough* oscillations *inside*
-      communities. Past the **spectral gap** (around $k \sim$ number of
-      clusters) the rest are essentially graph noise. Including them as
-      features dilutes the signal — pushing LE to 32 dimensions would
-      drop its F1 from ~0.88 down to ~0.83. So LE uses
-      **$k \approx 2\times\text{n\_classes}$ (max 16)**.
-
-    > **Like a Fourier basis for the graph.** LE eigenvectors are low
-    > to high frequencies; only the lowest few carry the community
-    > signal. Truncating early is right. SVD/PCA have no such "noise
-    > suffix" — they just decay in variance until you hit rank.
+    - **SVD and PCA: more dims → more signal.** Every direction picked
+      up by SVD/PCA is a real pattern in how nodes connect — community,
+      brokerage, neighbourhood shape, … none of them is noise. So we
+      use **$k = 32$** for SVD/PCA.
+    - **Laplacian Eigenmaps: more dims → more noise.** The Laplacian
+      orders its components from "smooth across the whole graph" to
+      "wiggly inside individual communities". After roughly **as many
+      components as there are classes**, the rest are wiggles *inside*
+      the existing communities — not useful for telling classes apart.
+      So we use **$k \approx 2\times\text{n\_classes}$ (max 16)**.
+      Pushing LE to 32 dimensions drops its F1 from ~0.88 down to
+      ~0.83.
 
     > **Reading the silhouette score.** For every node, silhouette
     > compares its average distance to other nodes **in its own class**
@@ -1033,22 +1037,25 @@ def sec3_n2v_intro(graph_data, mo):
           encourages return, large $q$ keeps the walk close to where it
           started → embedding captures **structural roles**.
 
-        _The scatters are 2-d **t-SNE** projections of the 32-d vectors
-        (not PCA): linear projections collapse onto the shared dominant
-        directions and look near-identical across the three settings,
-        while t-SNE preserves local cluster geometry where the contrast
-        between depth-first, balanced, and breadth-first walks lives._
+        _The scatters use **t-SNE** rather than a flat PCA projection,
+        because the three embeddings share most of their global
+        structure on this graph and a linear projection makes them
+        look identical. t-SNE keeps local geometry, where the actual
+        contrast lives._
 
-        **★ Track the three gold stars.** They are the highest-degree
-        node in three *different* classes — so they share a **structural
-        role** (hub-like) but belong to different communities. In the
-        **DFS** panel they sit inside their own colour cluster (the
-        embedding has organised them by community). As $q$ grows toward
-        **BFS**, they drift closer together regardless of colour,
-        because the walks now see their *2-hop neighbourhoods* as the
-        defining signal and these three hubs all look alike from that
-        angle. That's the homophily-vs-structural-role contrast
-        node2vec was designed to expose.
+        **★ Watch the three gold stars.** They are the highest-degree
+        node in three *different* classes — so they share a
+        **structural role** (each is a hub in its corner of the graph)
+        but live in different communities. The "**hub pull**" number
+        under each panel measures how close those three end up in the
+        embedding compared with three random nodes:
+
+        - values **below 1** → hubs are pulled *together* (the
+          embedding sees them as structurally similar, regardless of
+          community); this is the **BFS / structural** signature.
+        - values **above 1** → hubs are pushed *apart* (the embedding
+          has organised them by community); this is the **DFS /
+          homophily** signature.
         """)
     return
 
@@ -1061,11 +1068,11 @@ def load_n2v_all(load_npy, graph_data):
         n2v_embs = None
     else:
         n2v_embs = {
-            "p=4, q=0.1 — very DFS (homophily)":
+            "DFS-biased (p=4, q=0.1)\n→ homophily":
                 load_npy(f"{_prefix}node2vec_dfs.npy"),
-            "p=1, q=1 — balanced":
+            "balanced (p=1, q=1)":
                 load_npy(f"{_prefix}node2vec_balanced.npy"),
-            "p=0.25, q=10 — very BFS (structural)":
+            "BFS-biased + short walks\n→ structural roles":
                 load_npy(f"{_prefix}node2vec_bfs.npy"),
         }
     return (n2v_embs,)
@@ -1106,6 +1113,29 @@ def plot_n2v_all(
     mo.stop(n2v_embs is None, mo.md(""))
     _labels = graph_data["labels"]
     _names = graph_data["names"]
+
+    def _hub_ratio(_emb_arr):
+        """Mean pairwise distance among the struct_anchor nodes, divided
+        by the average mean-pairwise-distance of random same-size samples.
+        < 1 means anchors are CLOSER than chance (BFS / structural-role
+        signature); > 1 means anchors are FARTHER (DFS / community)."""
+        if not struct_anchors:
+            return None
+        from numpy.linalg import norm
+        _a = _emb_arr[struct_anchors]
+        _da = float(np.mean([norm(_a[i] - _a[j])
+                             for i in range(len(_a))
+                             for j in range(i + 1, len(_a))]))
+        _rng = np.random.default_rng(0)
+        _bases = []
+        for _ in range(100):
+            _s = _rng.choice(_emb_arr.shape[0], size=len(struct_anchors), replace=False)
+            _es = _emb_arr[_s]
+            _bases.append(float(np.mean([norm(_es[i] - _es[j])
+                                          for i in range(len(_es))
+                                          for j in range(i + 1, len(_es))])))
+        return _da / float(np.mean(_bases))
+
     _fig, _axes = plt.subplots(1, 3, figsize=(14.5, 4.8))
     for _ax, (_name, _emb) in zip(_axes, n2v_embs.items()):
         # The three n2v variants share most of their dominant variance
@@ -1151,10 +1181,12 @@ def plot_n2v_all(
         _ax.set_aspect("equal")
         _ax.set_title(_name, fontsize=11)
         _sil = silhouette_score(_emb, _labels)
+        _hub = _hub_ratio(_emb)
+        _hub_line = "" if _hub is None else f"\nhub pull = {_hub:.2f}× chance"
         _ax.text(
             0.98,
             0.02,
-            f"silhouette = {_sil:.3f}",
+            f"silhouette = {_sil:.3f}{_hub_line}",
             transform=_ax.transAxes,
             ha="right",
             va="bottom",
@@ -1176,25 +1208,30 @@ def sec4_header_md(mo):
     trained *with* labels, it can learn an embedding whose geometry is
     shaped by the task it is being asked to solve.
 
-    We train a 2-layer **GraphSAGE** (with dropout for regularisation)
-    for 100 epochs to predict the class of each node:
+    We train a 3-layer **Graph Convolutional Network (GCN)** (with
+    dropout for regularisation) for 200 epochs to predict the class of
+    each node. We picked GCN over GraphSAGE and GAT after a local
+    architecture sweep: a 3-layer GCN with hidden size 128 was the only
+    setup that consistently *beat* the unsupervised spectral baselines
+    on this dataset (macro-F1 ≈ 0.93 vs 0.92 for SVD/PCA).
 
     1. **Split** the nodes into a 50/50 train/test set, stratified by
        class (right →). The GNN sees the labels of the train nodes only.
-    2. **Message passing**: each layer rewrites every node's vector by
-       averaging its own vector with its neighbours' — so after two
-       layers, each node's representation has folded in information
-       from nodes two hops away. **Dropout** randomly zeros 50% of the
-       hidden activations during training, which prevents the GNN from
-       memorising single training nodes and improves generalisation to
-       the held-out test set.
+    2. **Message passing**: each GCN layer rewrites every node's vector
+       as a symmetric-normalised average of itself and its neighbours
+       ($D^{-1/2} A D^{-1/2}$). After three layers, each node's
+       representation has folded in information from nodes three hops
+       away. **Dropout** randomly zeros 50% of the hidden activations
+       during training, which prevents the GNN from memorising single
+       training nodes and improves generalisation to the held-out test
+       set.
     3. **Loss**: **cross-entropy** against the train labels. For each
        train node $i$ the GNN outputs a vector of class scores; softmax
        turns them into probabilities $\hat{p}_{ic}$ and the loss is
        $-\log \hat{p}_{i, y_i}$ — i.e. how surprised the model is by
        the true class. Averaged over train nodes, this is the quantity
        the optimiser pushes down each epoch.
-    4. The 32-d output of the second layer is the **learned embedding**.
+    4. The 32-d output of the third layer is the **learned embedding**.
     """)
     return (sec4_header_md,)
 
@@ -1214,7 +1251,7 @@ def plot_gnn_split(LineCollection, PALETTE, graph_data, gnn, layout_data, mo, pl
     mo.stop(
         gnn is None,
         mo.md(
-            "_The supervised GraphSAGE story is precomputed for the football "
+            "_The supervised GCN story is precomputed for the football "
             "and karate networks only. Switch to one of those to see it._"
         ),
     )
@@ -1280,7 +1317,7 @@ def plot_gnn_curves(gnn, mo, np, plt):
     _ax.plot(_epochs, _te_acc, color="#d62728", linewidth=1.6, label="test")
     _ax.set_xlabel("epoch")
     _ax.set_ylabel("accuracy")
-    _ax.set_title("GraphSAGE train / test accuracy during training")
+    _ax.set_title("GCN train / test accuracy during training")
     _ax.set_ylim(-0.02, 1.02)
     _ax.legend(loc="lower right", fontsize=10)
     _fig.tight_layout()
@@ -1310,7 +1347,7 @@ def gnn_embedding_fig(
     PALETTE, PCA, class_names_for, graph_data, gnn, layout_data, mo, np, plt,
     procrustes_align, silhouette_score,
 ):
-    """Build (but don't display) the GraphSAGE-embedding PCA figure.
+    """Build (but don't display) the GCN-embedding PCA figure.
 
     Section 5 picks it up and shows it side-by-side with the network view.
     """
@@ -1370,7 +1407,7 @@ def gnn_embedding_fig(
         _ax.grid(False)
         _ax.set_aspect("equal")
         _ax.set_title(
-            "Learned GraphSAGE embedding — 2D PCA\n"
+            "Learned GCN embedding — 2D PCA\n"
             "(filled = train, hollow = test, black ring + → label = wrong on test)",
             fontsize=10,
         )
@@ -1467,16 +1504,16 @@ def sec5_header(mo):
     ## Section 5: Predicting the class from each embedding
 
     Take each embedding we built — spectral, node2vec, and the supervised
-    GraphSAGE — and use it as input features for a plain **multinomial
+    GCN — and use it as input features for a plain **multinomial
     (softmax) logistic regression** that predicts the node class.
 
     To make the comparison apples-to-apples, every method uses the
-    **same train/test split** that the GraphSAGE was trained on:
+    **same train/test split** that the GCN was trained on:
 
     - the GNN sees the train-node labels during its training,
     - each logistic regression sees the train-node labels during its fit,
     - everything is evaluated on the held-out test nodes — **no method
-      ever saw the test-node labels.** Including the GraphSAGE embedding
+      ever saw the test-node labels.** Including the GCN embedding
       here is fair: only train labels touched it.
 
     The table below shows test-set **accuracy**, **macro-averaged
@@ -1493,7 +1530,7 @@ def sec5_header(mo):
 def classification_split(gnn, graph_data, np, train_test_split):
     """Train/test split used in Section 5.
 
-    For football and karate we reuse the exact mask the GraphSAGE was
+    For football and karate we reuse the exact mask the GCN was
     trained on (so every method sees the same train and test nodes). For
     a user-uploaded labelled graph, we compute a 50/50 stratified split
     on the fly with a fixed seed.
@@ -1561,7 +1598,7 @@ def classify_all(
         ]:
             _methods.append((_q_label, load_npy(f"{_prefix}{_file}")))
     if gnn is not None:
-        _methods.append(("GraphSAGE (supervised)", gnn["emb"]))
+        _methods.append(("GCN (supervised)", gnn["emb"]))
 
     _rows = []
     for _name, _emb in _methods:
@@ -1587,9 +1624,9 @@ def classify_all(
     _df = pd.DataFrame(_rows).sort_values("accuracy", ascending=False).reset_index(drop=True)
 
     _note = (
-        "same split as the GraphSAGE training above"
+        "same split as the GCN training above"
         if split["source"] == "graphsage"
-        else "50/50 stratified split (no precomputed GraphSAGE for this graph)"
+        else "50/50 stratified split (no precomputed GCN for this graph)"
     )
     _summary = mo.md(
         f"_Train set: {int(_train_mask.sum())} nodes &nbsp;·&nbsp; "
@@ -1604,9 +1641,9 @@ def classify_all(
 def sec5_errors_header(gnn, mo):
     mo.stop(gnn is None, mo.md(""))
     mo.md(r"""
-    ### Where does GraphSAGE go wrong on the test set?
+    ### Where does GCN go wrong on the test set?
 
-    Left: the **learned 32-d GraphSAGE embedding**, projected to 2-d
+    Left: the **learned 32-d GCN embedding**, projected to 2-d
     with PCA. Right: the **same nodes back on the actual network**.
     In both, filled markers are train nodes, hollow markers are
     test nodes, and a **black ring** marks every test node the GNN
@@ -1624,6 +1661,42 @@ def sec5_errors_layout(gnn, gnn_emb_fig, gnn_errors_fig, mo):
     mo.hstack(
         [gnn_emb_fig, gnn_errors_fig], widths=[1, 1], gap=1.0, align="start"
     )
+    return
+
+
+@app.cell
+def conclusion(mo):
+    mo.md(r"""
+    ---
+    ## Wrap-up: when to use which method?
+
+    | Method | Sees labels? | Best at | Watch out for |
+    |---|---|---|---|
+    | **Truncated SVD / PCA of $A$** | no | a strong general-purpose baseline; cheap, deterministic, and works whenever the network has any structure at all | needs the right number of dimensions — too few drops accuracy. SVD's first axis is degree-shaped (it disappears if you centre, which is what PCA does) |
+    | **Laplacian Eigenmaps** | no | recovering **community-shaped** classes — especially when classes look like cliques in the graph | only the *first few* eigenvectors are useful; adding more dimensions actually *hurts*. Performance falls off classes that aren't real communities (Independents on football) |
+    | **node2vec** | no | shifting between **community** ($q \!<\! 1$, DFS) and **structural-role** ($q \!>\! 1$, BFS) views of the same network — by changing two knobs | many hyperparameters (p, q, walk length, window) — on a dense, near-regular network like football the bias has little room to move, the differences become subtle |
+    | **GCN (supervised)** | YES | every dataset where you have *some* labels; trained directly on the classification objective, so it can pick up patterns SVD/LE/node2vec miss | the most expensive option; needs careful regularisation (dropout, weight decay) to not overfit on small training sets. Without enough train labels it just memorises them and doesn't generalise |
+
+    **General lessons** the football and karate networks reveal:
+
+    - The **easy classes** (large, dense, well-separated conferences) are
+      solved by basically every method. The interesting question is
+      always how each method handles the **hard classes** — here the
+      Independents and Sun Belt teams, which lack a clear community
+      structure. SVD/PCA and GCN handle them best because they can pick
+      up *which* communities each team interacted with, not just *that*
+      it interacted with some community.
+    - **Supervised wins, but not by much**. The GCN beats the
+      unsupervised methods by only a few F1 points (~0.93 vs ~0.92 on
+      football) — because the structure of the network already encodes
+      almost all of the label information. On graphs where labels are
+      *less* tied to structure, the gap would widen.
+    - **Embeddings are not interpretable axes**. Throughout we used
+      2-d projections (the first two components for spectral methods,
+      PCA for GCN, t-SNE for node2vec) — but the underlying spaces are
+      32-dimensional and their individual axes don't carry meaning.
+      That's why we strip the tick labels: only the *geometry* matters.
+    """)
     return
 
 

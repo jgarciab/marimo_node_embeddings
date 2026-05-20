@@ -29,6 +29,21 @@ from torch_geometric.data import Data
 from torch_geometric.nn import SAGEConv, GCNConv
 from sklearn.metrics import silhouette_score
 from sklearn.model_selection import train_test_split
+import umap
+
+
+def umap_2d(emb, seed=1546, n_neighbors=15, min_dist=0.1):
+    """Compute a 2-d UMAP projection of a high-dim embedding.
+
+    Saved as a .npy file so the WASM app can load it directly without
+    needing umap-learn (which depends on numba and doesn't run in
+    Pyodide). n_neighbors caps at the dataset size minus 1 to avoid
+    UMAP errors on tiny graphs (karate).
+    """
+    n = emb.shape[0]
+    nn = max(2, min(n_neighbors, n - 1))
+    return umap.UMAP(n_components=2, random_state=seed, n_neighbors=nn,
+                     min_dist=min_dist).fit_transform(emb).astype(np.float32)
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
@@ -73,11 +88,11 @@ G.add_edges_from(edges)
 
 def run_node2vec(p: float, q: float, out_path: Path,
                  walk_length: int = 40, num_walks: int = 20,
-                 window: int = 5) -> np.ndarray:
+                 window: int = 5, dim: int = 32) -> np.ndarray:
     print(f"  node2vec p={p}, q={q}, wl={walk_length}, nw={num_walks}, w={window} ...")
     n2v = Node2Vec(
         G,
-        dimensions=32,
+        dimensions=dim,
         walk_length=walk_length,
         num_walks=num_walks,
         p=p,
@@ -87,12 +102,16 @@ def run_node2vec(p: float, q: float, out_path: Path,
         quiet=True,
     )
     model = n2v.fit(window=window, min_count=1, batch_words=4, seed=SEED, workers=1)
-    emb = np.zeros((n, 32), dtype=np.float32)
+    emb = np.zeros((n, dim), dtype=np.float32)
     for i in range(n):
         emb[i] = model.wv[str(i)]
     np.save(out_path, emb)
+    # Also save the 2-d UMAP projection so the WASM app can plot it
+    # directly (umap-learn doesn't run in Pyodide).
+    umap_path = out_path.with_name(out_path.stem + "_umap.npy")
+    np.save(umap_path, umap_2d(emb))
     sil = silhouette_score(emb, labels)
-    print(f"    saved {out_path.name}  shape={emb.shape}  silhouette={sil:.3f}")
+    print(f"    saved {out_path.name} + {umap_path.name}  shape={emb.shape}  silhouette={sil:.3f}")
     return emb
 
 
@@ -116,12 +135,16 @@ if RUN in ("all", "node2vec"):
     # node's immediate degree pattern, which is the same for all three
     # hubs, so they cluster (anchors cos ≈ 0.75). The (p, q) bias
     # reinforces that, but it is the secondary lever.
-    run_node2vec(4.0,  0.1,  DATA / "node2vec_dfs.npy",
-                 walk_length=80, num_walks=10, window=5)
-    run_node2vec(1.0,  1.0,  DATA / "node2vec_balanced.npy",
-                 walk_length=20, num_walks=40, window=5)
-    run_node2vec(0.25, 10.0, DATA / "node2vec_bfs.npy",
-                 walk_length=3, num_walks=100, window=2)
+    # Paper-faithful settings (Grover & Leskovec 2016, Fig 3 on Les
+    # Misérables): walk_length=80, num_walks=10, window=10, dim=16.
+    # Contrast comes from q alone: q=0.5 (DFS-like) → homophily;
+    # q=2 (BFS-like) → structural roles. The paper shows the
+    # difference via k-means cluster colours on the network, not via
+    # raw embedding distances — so the bottom row is doing the work.
+    PAPER_KW = dict(walk_length=80, num_walks=10, window=10, dim=16)
+    run_node2vec(1.0, 0.5, DATA / "node2vec_dfs.npy",      **PAPER_KW)
+    run_node2vec(1.0, 1.0, DATA / "node2vec_balanced.npy", **PAPER_KW)
+    run_node2vec(1.0, 2.0, DATA / "node2vec_bfs.npy",      **PAPER_KW)
 else:
     print(f"skipping node2vec (only={RUN})")
 
@@ -353,27 +376,26 @@ if RUN in ("all", "karate"):
     G_k.add_edges_from(edges_k)
 
     def run_node2vec_k(p: float, q: float, out_path: Path,
-                        walk_length: int = 20, num_walks: int = 40,
-                        window: int = 5) -> None:
+                        walk_length: int = 80, num_walks: int = 10,
+                        window: int = 10, dim: int = 16) -> None:
         print(f"  karate n2v p={p}, q={q}, wl={walk_length}, nw={num_walks}, w={window} ...")
         n2v = Node2Vec(
-            G_k, dimensions=32, walk_length=walk_length, num_walks=num_walks,
+            G_k, dimensions=dim, walk_length=walk_length, num_walks=num_walks,
             p=p, q=q, workers=1, seed=SEED, quiet=True,
         )
         model = n2v.fit(window=window, min_count=1, batch_words=4, seed=SEED, workers=1)
-        emb = np.zeros((n_k, 32), dtype=np.float32)
+        emb = np.zeros((n_k, dim), dtype=np.float32)
         for i in range(n_k):
             emb[i] = model.wv[str(i)]
         np.save(out_path, emb)
+        umap_path = out_path.with_name(out_path.stem + "_umap.npy")
+        np.save(umap_path, umap_2d(emb))
         sil = silhouette_score(emb, labels_k)
-        print(f"    saved {out_path.name}  shape={emb.shape}  silhouette={sil:.3f}")
+        print(f"    saved {out_path.name} + {umap_path.name}  silhouette={sil:.3f}")
 
-    run_node2vec_k(4.0,  0.1,  DATA / "karate_node2vec_dfs.npy",
-                   walk_length=80, num_walks=10, window=5)
-    run_node2vec_k(1.0,  1.0,  DATA / "karate_node2vec_balanced.npy",
-                   walk_length=20, num_walks=40, window=5)
-    run_node2vec_k(0.25, 10.0, DATA / "karate_node2vec_bfs.npy",
-                   walk_length=3, num_walks=100, window=2)
+    run_node2vec_k(1.0, 0.5, DATA / "karate_node2vec_dfs.npy")
+    run_node2vec_k(1.0, 1.0, DATA / "karate_node2vec_balanced.npy")
+    run_node2vec_k(1.0, 2.0, DATA / "karate_node2vec_bfs.npy")
 
     # Supervised GraphSAGE for karate
     print("  karate graphsage (supervised) ...")
@@ -467,27 +489,26 @@ if RUN in ("all", "lesmis"):
     G_lm.add_edges_from(edges_lm)
 
     def run_node2vec_lm(p: float, q: float, out_path: Path,
-                        walk_length: int = 40, num_walks: int = 20,
-                        window: int = 5) -> None:
+                        walk_length: int = 80, num_walks: int = 10,
+                        window: int = 10, dim: int = 16) -> None:
         print(f"  lesmis n2v p={p}, q={q}, wl={walk_length}, nw={num_walks}, w={window} ...")
         n2v = Node2Vec(
-            G_lm, dimensions=32, walk_length=walk_length, num_walks=num_walks,
+            G_lm, dimensions=dim, walk_length=walk_length, num_walks=num_walks,
             p=p, q=q, workers=1, seed=SEED, quiet=True,
         )
         model = n2v.fit(window=window, min_count=1, batch_words=4, seed=SEED, workers=1)
-        emb = np.zeros((n_lm, 32), dtype=np.float32)
+        emb = np.zeros((n_lm, dim), dtype=np.float32)
         for i in range(n_lm):
             emb[i] = model.wv[str(i)]
         np.save(out_path, emb)
+        umap_path = out_path.with_name(out_path.stem + "_umap.npy")
+        np.save(umap_path, umap_2d(emb))
         sil = silhouette_score(emb, labels_lm)
-        print(f"    saved {out_path.name}  shape={emb.shape}  silhouette={sil:.3f}")
+        print(f"    saved {out_path.name} + {umap_path.name}  silhouette={sil:.3f}")
 
-    run_node2vec_lm(4.0,  0.1,  DATA / "lesmis_node2vec_dfs.npy",
-                    walk_length=80, num_walks=10, window=5)
-    run_node2vec_lm(1.0,  1.0,  DATA / "lesmis_node2vec_balanced.npy",
-                    walk_length=20, num_walks=40, window=5)
-    run_node2vec_lm(0.25, 10.0, DATA / "lesmis_node2vec_bfs.npy",
-                    walk_length=3, num_walks=100, window=2)
+    run_node2vec_lm(1.0, 0.5, DATA / "lesmis_node2vec_dfs.npy")
+    run_node2vec_lm(1.0, 1.0, DATA / "lesmis_node2vec_balanced.npy")
+    run_node2vec_lm(1.0, 2.0, DATA / "lesmis_node2vec_bfs.npy")
 
     print("  lesmis GCN (supervised) ...")
     src_lm, dst_lm = [], []

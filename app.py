@@ -265,22 +265,46 @@ def imports():
 
     def network_with_cluster_colors(ax, g, coords, edges_iter, cluster_ids,
                                     palette, struct_anchors=None,
-                                    title=None, alpha_edges=0.4):
-        """Draw the network laid out by FR with node colours coming from
-        a k-means clustering of an embedding (à la Fig 3 of the node2vec
-        paper). Anchor nodes get a gold star + label."""
+                                    title=None, names=None, show_labels=False):
+        """Draw the network laid out by FR with node + edge colours coming
+        from a k-means clustering of an embedding (Fig 3 of the node2vec
+        paper). Intra-cluster edges are thick and coloured by their
+        cluster; inter-cluster edges are thin grey. Anchor nodes get a
+        hollow black square around them so their node colour stays
+        visible. Optionally annotate every node with its name."""
         from matplotlib.collections import LineCollection as _LC
         ax.set_facecolor("white")
-        _segs = [[coords[e.source], coords[e.target]] for e in edges_iter]
-        ax.add_collection(_LC(_segs, colors="#dddddd", linewidths=0.5,
-                              alpha=alpha_edges, zorder=1))
+        # Sort edges into intra-cluster vs inter-cluster.
+        _intra, _intra_c, _inter = [], [], []
+        for e in edges_iter:
+            _s, _t = e.source, e.target
+            _seg = [coords[_s], coords[_t]]
+            if cluster_ids[_s] == cluster_ids[_t]:
+                _intra.append(_seg)
+                _intra_c.append(palette[int(cluster_ids[_s]) % len(palette)])
+            else:
+                _inter.append(_seg)
+        if _inter:
+            ax.add_collection(_LC(_inter, colors="#dddddd",
+                                  linewidths=0.5, alpha=0.55, zorder=1))
+        if _intra:
+            ax.add_collection(_LC(_intra, colors=_intra_c,
+                                  linewidths=1.6, alpha=0.85, zorder=2))
         _colors = [palette[int(c) % len(palette)] for c in cluster_ids]
-        ax.scatter(coords[:, 0], coords[:, 1], s=45, c=_colors,
-                   edgecolor="#333333", linewidth=0.4, zorder=2)
+        ax.scatter(coords[:, 0], coords[:, 1], s=55, c=_colors,
+                   edgecolor="#333333", linewidth=0.4, zorder=3)
         if struct_anchors:
             for _i in struct_anchors:
-                ax.scatter(coords[_i, 0], coords[_i, 1], s=180, marker="*",
-                           facecolor="gold", edgecolor="black", linewidth=1.0, zorder=5)
+                # Hollow black square AROUND the node — the fill colour
+                # stays visible (user feedback).
+                ax.scatter(coords[_i, 0], coords[_i, 1], s=260,
+                           marker="s", facecolors="none",
+                           edgecolor="black", linewidth=1.8, zorder=5)
+        if show_labels and names is not None:
+            for _i, _nm in enumerate(names):
+                ax.annotate(str(_nm), xy=(coords[_i, 0], coords[_i, 1]),
+                            xytext=(3, 3), textcoords="offset points",
+                            fontsize=6, color="#333333", alpha=0.8, zorder=6)
         ax.set_xticks([]); ax.set_yticks([]); ax.grid(False); ax.set_aspect("equal")
         if title:
             ax.set_title(title, fontsize=10)
@@ -398,17 +422,26 @@ def sec1_widgets(mo):
         multiple=False,
         label="CSV or GraphML",
     )
-    return dataset_choice, upload
+    show_node_labels = mo.ui.checkbox(value=False, label="Show node labels on all networks")
+    return dataset_choice, show_node_labels, upload
 
 
 @app.cell
-def sidebar(dataset_choice, mo, upload):
+def sidebar(dataset_choice, mo, show_node_labels, upload):
     mo.sidebar(
         [
             mo.md("### Dataset"),
             dataset_choice,
             mo.md("_Or upload your own:_"),
             upload,
+            mo.md(
+                "_CSV: needs a `source` and `target` column (the edge "
+                "list). An optional third column named `class` or "
+                "`label` becomes the per-node class label._"
+            ),
+            mo.md("---"),
+            mo.md("### Display"),
+            show_node_labels,
             mo.md("---"),
             mo.md(
                 "_The active network drives every section below — pick "
@@ -532,14 +565,39 @@ def build_graph(load_graphml, parse_graphml, dataset_choice, ig, io, np, pd, upl
                     _g = ig.Graph(n=len(_nodes), edges=_edges, directed=False)
                     _g.simplify()
                     _g.vs["name"] = _nodes
-                    _labels = None
-                    _classes_available = False
-                    _is_byod = True
-                    _description = (
-                        f"**User-uploaded CSV edge list** with {_g.vcount()} "
-                        f"nodes and {_g.ecount()} edges. _Classification "
-                        f"panels are hidden (no class labels)._"
-                    )
+                    # Optional third column with per-node class labels.
+                    _class_col = next((_c for _c in ("class", "label", "group") if _c in cols), None)
+                    if _class_col is not None:
+                        # Build a node→class map from the edge list:
+                        # whichever value appears most for each node wins
+                        # (handles duplicates gracefully).
+                        _node_cls = {}
+                        for _s, _t, _c in zip(_df["source"], _df["target"], _df[_class_col]):
+                            for _node in (_s, _t):
+                                _node_cls.setdefault(_node, []).append(_c)
+                        from collections import Counter as _Counter
+                        _per_node = [
+                            _Counter(_node_cls.get(_n, ["?"])).most_common(1)[0][0]
+                            for _n in _nodes
+                        ]
+                        _labels = _coerce_labels(_per_node)
+                        _classes_available = True
+                        _is_byod = True
+                        _description = (
+                            f"**User-uploaded CSV edge list** with "
+                            f"{_g.vcount()} nodes, {_g.ecount()} edges, "
+                            f"and {len(set(_labels))} classes (from column "
+                            f"`{_class_col}`)."
+                        )
+                    else:
+                        _labels = None
+                        _classes_available = False
+                        _is_byod = True
+                        _description = (
+                            f"**User-uploaded CSV edge list** with {_g.vcount()} "
+                            f"nodes and {_g.ecount()} edges. _No `class` "
+                            f"column found, so classification panels are hidden._"
+                        )
         except Exception as e:
             _g = None
             _err = f"Failed to read upload: {e}"
@@ -687,12 +745,14 @@ def stats_panel(graph_data, mo):
 
 @app.cell
 def plot_network(
-    LineCollection, PALETTE, class_names_for, graph_data, layout_data, mo, np, plt
+    LineCollection, PALETTE, class_names_for, graph_data, layout_data, mo, np,
+    plt, show_node_labels,
 ):
     _g = graph_data["graph"]
     mo.stop(_g is None, mo.md("_(No graph to display.)_"))
     _coords = layout_data["coords"]
     _labels = graph_data["labels"]
+    _node_names = graph_data["names"]
     _fig, _ax = plt.subplots(figsize=(8.5, 6.5))
     _ax.set_facecolor("white")
     _segs = [[_coords[e.source], _coords[e.target]] for e in _g.es]
@@ -720,6 +780,11 @@ def plot_network(
             _coords[:, 0], _coords[:, 1], s=55, c="#0b789d",
             edgecolor="#333333", linewidth=0.4, zorder=2,
         )
+    if show_node_labels.value and _node_names is not None:
+        for _i, _nm in enumerate(_node_names):
+            _ax.annotate(str(_nm), xy=(_coords[_i, 0], _coords[_i, 1]),
+                         xytext=(3, 3), textcoords="offset points",
+                         fontsize=6, color="#333333", alpha=0.8, zorder=4)
     _ax.set_xticks([])
     _ax.set_yticks([])
     _ax.grid(False)
@@ -889,9 +954,11 @@ def compute_spectral(PCA, TruncatedSVD, graph_data, mo, np):
 @app.cell
 def plot_spectral(
     KMeans, PALETTE, graph_data, layout_data, network_with_cluster_colors, np, plt,
-    procrustes_align, silhouette_score, spectral_embs, struct_anchors,
+    procrustes_align, show_node_labels, silhouette_score, spectral_embs,
+    struct_anchors,
 ):
     _labels = graph_data["labels"]
+    _names = graph_data["names"]
     _anchor_idx = layout_data["anchor_idx"]
     _anchor_targets = layout_data["anchor_targets"]
     _coords = layout_data["coords"]
@@ -915,6 +982,27 @@ def plot_spectral(
         else:
             _colors = ["#0b789d"] * _emb.shape[0]
         _ax.scatter(_emb2[:, 0], _emb2[:, 1], s=45, c=_colors, edgecolor="#333333", linewidth=0.4)
+        # Anchor squares (hollow black) on the spectral panels too.
+        if struct_anchors:
+            for _i in struct_anchors:
+                _ax.scatter(
+                    _emb2[_i, 0], _emb2[_i, 1], s=280, marker="s",
+                    facecolors="none", edgecolor="black", linewidth=1.8, zorder=5,
+                )
+                _ax.annotate(
+                    str(_names[_i]),
+                    xy=(_emb2[_i, 0], _emb2[_i, 1]),
+                    xytext=(8, 8), textcoords="offset points",
+                    fontsize=7, color="#222222",
+                    bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="#888888", alpha=0.9, lw=0.5),
+                )
+        if show_node_labels.value:
+            for _i, _nm in enumerate(_names):
+                if struct_anchors and _i in struct_anchors:
+                    continue
+                _ax.annotate(str(_nm), xy=(_emb2[_i, 0], _emb2[_i, 1]),
+                             xytext=(3, 3), textcoords="offset points",
+                             fontsize=6, color="#444444", alpha=0.7, zorder=4)
         _ax.set_xticks([])
         _ax.set_yticks([])
         _ax.grid(False)
@@ -946,6 +1034,7 @@ def plot_spectral(
                 _ax, _g, _coords, _g.es, _km.labels_,
                 PALETTE, struct_anchors=struct_anchors,
                 title=f"network coloured by k-means on {_name.split('(')[0].strip()}",
+                names=_names, show_labels=show_node_labels.value,
             )
     _fig.tight_layout()
     _fig
@@ -1101,27 +1190,25 @@ def sec3_n2v_intro(graph_data, mo):
         )
     else:
         mo.md(r"""
-        ### node2vec embeddings at three extreme settings
+        ### node2vec embeddings at three settings — Fig 3 of the paper
 
         Repeat the biased walk above many times from every node, feed
-        the corpus of walks into word2vec, and you get a 32-d vector
-        per node. Below: precomputed node2vec embeddings (using the
-        standard `gensim`-backed `node2vec` library) at three corners
-        of the parameter space. **We vary not just $p$ and $q$ but
-        also walk length** — a careful local sweep showed walk length
-        is in fact the *dominant* lever for the homophily-vs-role
-        contrast on these small graphs; $p, q$ reinforce it.
+        the corpus of walks into word2vec, and you get a 16-d vector
+        per node. The three panels below use **the exact setup of
+        Figure 3 in Grover & Leskovec (2016)**: same walk length 80,
+        10 walks per node, window 10, dimension 16 — only $q$ varies.
 
-        - **DFS + long walks** ($p\!=\!4,\ q\!=\!0.1,\ \ell\!=\!80$): the
-          walk roams far from the start, so the embedding learns who
-          each node's *community* is → **homophily**.
-        - **Balanced** ($p\!=\!1,\ q\!=\!1,\ \ell\!=\!20$): vanilla
-          random walks; sits in between.
-        - **BFS + very short walks** ($p\!=\!0.25,\ q\!=\!10,\ \ell\!=\!3$):
-          the walk barely leaves the start, so the embedding only
-          captures each node's *immediate degree pattern* — and two
-          hubs from different communities end up looking alike →
-          **structural roles**.
+        - **$q = 0.5$ (DFS-like)**: walks roam outward from each start
+          → embedding captures **homophily / community**.
+        - **$q = 1$**: vanilla random walk.
+        - **$q = 2$ (BFS-like)**: walks stay close to each start
+          → embedding captures **structural role**.
+
+        The paper notes that the contrast is *most visible* through
+        the *k-means cluster colours on the network* (bottom row), not
+        through raw embedding distances. On dense, near-regular
+        graphs the change in scatter is subtle; the change in cluster
+        assignments is dramatic.
 
         _Top row_: 2-d **t-SNE** of each 32-d embedding (linear
         projections look near-identical here; t-SNE preserves local
@@ -1160,16 +1247,27 @@ def load_n2v_all(load_npy, graph_data):
     _prefix = graph_data["precomp_prefix"]
     if _g is None or _prefix is None:
         n2v_embs = None
+        n2v_umap = None
     else:
+        # Paper-faithful (Grover & Leskovec 2016, Fig 3): same walk
+        # config across the three, only q varies.
         n2v_embs = {
-            "DFS-biased + long walks\n(p=4, q=0.1, walk=80)\n→ homophily":
+            "DFS-like (p=1, q=0.5)\n→ homophily":
                 load_npy(f"{_prefix}node2vec_dfs.npy"),
-            "balanced\n(p=1, q=1, walk=20)":
+            "balanced (p=1, q=1)":
                 load_npy(f"{_prefix}node2vec_balanced.npy"),
-            "BFS-biased + very short walks\n(p=0.25, q=10, walk=3)\n→ structural roles":
+            "BFS-like (p=1, q=2)\n→ structural roles":
                 load_npy(f"{_prefix}node2vec_bfs.npy"),
         }
-    return (n2v_embs,)
+        n2v_umap = {
+            "DFS-like (p=1, q=0.5)\n→ homophily":
+                load_npy(f"{_prefix}node2vec_dfs_umap.npy"),
+            "balanced (p=1, q=1)":
+                load_npy(f"{_prefix}node2vec_balanced_umap.npy"),
+            "BFS-like (p=1, q=2)\n→ structural roles":
+                load_npy(f"{_prefix}node2vec_bfs_umap.npy"),
+        }
+    return n2v_embs, n2v_umap
 
 
 @app.cell
@@ -1205,11 +1303,10 @@ def select_structural_anchors(graph_data, np):
 
 @app.cell
 def plot_n2v_all(
-    KMeans, PALETTE, graph_data, layout_data, mo, n2v_embs,
-    network_with_cluster_colors, np, plt, silhouette_score, struct_anchors,
+    KMeans, PALETTE, graph_data, layout_data, mo, n2v_embs, n2v_umap,
+    network_with_cluster_colors, np, plt, show_node_labels, silhouette_score,
+    struct_anchors,
 ):
-    from sklearn.manifold import TSNE
-
     mo.stop(n2v_embs is None, mo.md(""))
     _labels = graph_data["labels"]
     _names = graph_data["names"]
@@ -1218,10 +1315,6 @@ def plot_n2v_all(
     _n_classes = len(set(int(c) for c in _labels)) if _labels is not None else 4
 
     def _hub_ratio(_emb_arr):
-        """Mean pairwise distance among the struct_anchor nodes, divided
-        by the average mean-pairwise-distance of random same-size samples.
-        < 1 means anchors are CLOSER than chance (BFS / structural-role
-        signature); > 1 means anchors are FARTHER (DFS / community)."""
         if not struct_anchors:
             return None
         from numpy.linalg import norm
@@ -1241,67 +1334,52 @@ def plot_n2v_all(
 
     _fig, _axes = plt.subplots(2, 3, figsize=(14.5, 9.0), height_ratios=[1, 1])
     for _ax, (_name, _emb) in zip(_axes[0], n2v_embs.items()):
-        # The three n2v variants share most of their dominant variance
-        # directions on football (principal angles between top-5 subspaces
-        # ~10°), so a 2-d *linear* projection ends up looking nearly
-        # identical across panels. t-SNE preserves *local* geometry
-        # instead, which is where the contrast between depth-first,
-        # balanced, and breadth-first walks actually lives.
-        _n = _emb.shape[0]
-        _perp = max(5, min(30, _n // 4))
-        _tsne = TSNE(
-            n_components=2, perplexity=_perp, random_state=1546,
-            init="pca", learning_rate="auto",
-        )
-        _emb2 = _tsne.fit_transform(_emb)
+        # 2-d UMAP (precomputed; UMAP itself depends on numba and so can't
+        # run in Pyodide). UMAP preserves more global structure than
+        # t-SNE, which makes the homophily-vs-role contrast more visible.
+        _emb2 = n2v_umap[_name].astype(float)
         _emb2 = (_emb2 - _emb2.mean(axis=0)) / (_emb2.std(axis=0) + 1e-12)
         if _labels is not None:
             _colors = [PALETTE[int(c) % len(PALETTE)] for c in _labels]
         else:
             _colors = ["#0b789d"] * _emb.shape[0]
-        _ax.scatter(_emb2[:, 0], _emb2[:, 1], s=45, c=_colors, edgecolor="#333333", linewidth=0.4)
-        # Structural anchors: the highest-degree node from each of 3
-        # different classes. Watch them go from *inside their own colour
-        # cluster* (very DFS) to *clustered together regardless of
-        # colour* (very BFS) — that's literally the homophily-vs-
-        # structural-role contrast node2vec is supposed to expose.
+        _ax.scatter(_emb2[:, 0], _emb2[:, 1], s=45, c=_colors,
+                    edgecolor="#333333", linewidth=0.4)
+        # Structural anchors: highest-betweenness node per class.
+        # Marker is a *hollow black square* so the node's own colour
+        # stays readable.
         if struct_anchors:
             for _i in struct_anchors:
                 _ax.scatter(
-                    _emb2[_i, 0], _emb2[_i, 1], s=220, marker="*",
-                    facecolor="gold", edgecolor="black", linewidth=1.2, zorder=5,
+                    _emb2[_i, 0], _emb2[_i, 1], s=280, marker="s",
+                    facecolors="none", edgecolor="black", linewidth=1.8, zorder=5,
                 )
                 _ax.annotate(
                     str(_names[_i]),
                     xy=(_emb2[_i, 0], _emb2[_i, 1]),
-                    xytext=(7, 7), textcoords="offset points",
+                    xytext=(8, 8), textcoords="offset points",
                     fontsize=7, color="#222222",
                     bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="#888888", alpha=0.9, lw=0.5),
                 )
-        _ax.set_xticks([])
-        _ax.set_yticks([])
-        _ax.grid(False)
-        _ax.set_aspect("equal")
+        if show_node_labels.value:
+            for _i, _nm in enumerate(_names):
+                if struct_anchors and _i in struct_anchors:
+                    continue  # already labelled above
+                _ax.annotate(str(_nm), xy=(_emb2[_i, 0], _emb2[_i, 1]),
+                             xytext=(3, 3), textcoords="offset points",
+                             fontsize=6, color="#444444", alpha=0.7, zorder=4)
+        _ax.set_xticks([]); _ax.set_yticks([]); _ax.grid(False); _ax.set_aspect("equal")
         _ax.set_title(_name, fontsize=11)
         _sil = silhouette_score(_emb, _labels)
         _hub = _hub_ratio(_emb)
         _hub_line = "" if _hub is None else f"\nhub pull = {_hub:.2f}× chance"
         _ax.text(
-            0.98,
-            0.02,
-            f"silhouette = {_sil:.3f}{_hub_line}",
-            transform=_ax.transAxes,
-            ha="right",
-            va="bottom",
-            fontsize=10,
+            0.98, 0.02, f"silhouette = {_sil:.3f}{_hub_line}",
+            transform=_ax.transAxes, ha="right", va="bottom", fontsize=10,
             bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="#888888", alpha=0.9),
         )
-    # Bottom row: the network laid out by FR, coloured by k-means on
-    # each embedding (Fig 3 of Grover-Leskovec 2016). Homophily-flavoured
-    # embeddings produce clusters that line up with the true communities;
-    # structural-role-flavoured embeddings produce clusters that *cut
-    # across* communities — anchors with similar roles end up in the
-    # same colour even when they live far apart on the network.
+    # Bottom row: same FR layout, coloured by k-means on each embedding
+    # — Fig 3 of Grover & Leskovec 2016.
     if _g is not None and _coords is not None and _n_classes >= 2:
         for _ax, (_name, _emb) in zip(_axes[1], n2v_embs.items()):
             _km = KMeans(n_clusters=_n_classes, n_init=10, random_state=1546).fit(_emb)
@@ -1310,6 +1388,7 @@ def plot_n2v_all(
                 _ax, _g, _coords, _g.es, _km.labels_,
                 PALETTE, struct_anchors=struct_anchors,
                 title=f"network coloured by k-means · {_short}",
+                names=_names, show_labels=show_node_labels.value,
             )
     _fig.tight_layout()
     _fig

@@ -770,7 +770,7 @@ def compute_spectral(PCA, TruncatedSVD, graph_data, mo, np):
 
 @app.cell
 def plot_spectral(
-    PALETTE, graph_data, layout_data, plt, procrustes_align, silhouette_score, spectral_embs
+    PALETTE, graph_data, layout_data, np, plt, procrustes_align, silhouette_score, spectral_embs
 ):
     _labels = graph_data["labels"]
     _anchor_idx = layout_data["anchor_idx"]
@@ -780,11 +780,13 @@ def plot_spectral(
         # Spectral methods produce columns *already ordered by importance*
         # (singular values for SVD/PCA, ascending eigenvalues for the
         # Laplacian). PCA of these orthonormal columns washes that
-        # ordering out and produces a meaningless rotation, so we plot
-        # the first two raw dimensions directly. The Fiedler vector
-        # (Laplacian column 0) is what carries the dominant community
-        # cut, which is what we want to see in 2-d.
-        _emb2 = _emb[:, :2]
+        # ordering out, so we plot the first two raw dimensions directly.
+        # Then we z-score each axis so panels with very different per-
+        # column scales (notably SVD/PCA of A, whose first singular
+        # vector dwarfs the second) don't collapse to a thin column once
+        # Procrustes applies its isotropic scale.
+        _emb2 = _emb[:, :2].astype(float)
+        _emb2 = (_emb2 - _emb2.mean(axis=0)) / (_emb2.std(axis=0) + 1e-12)
         if _anchor_idx is not None and _anchor_targets is not None:
             _emb2 = procrustes_align(_emb2, _anchor_idx, _anchor_targets)
         if _labels is not None:
@@ -1006,7 +1008,7 @@ def load_n2v_all(load_npy, graph_data):
 
 @app.cell
 def plot_n2v_all(
-    PALETTE, PCA, graph_data, layout_data, mo, n2v_embs, plt, procrustes_align, silhouette_score
+    PALETTE, PCA, graph_data, layout_data, mo, n2v_embs, np, plt, procrustes_align, silhouette_score
 ):
     mo.stop(n2v_embs is None, mo.md(""))
     _labels = graph_data["labels"]
@@ -1015,6 +1017,7 @@ def plot_n2v_all(
     _fig, _axes = plt.subplots(1, 3, figsize=(14.5, 4.8))
     for _ax, (_name, _emb) in zip(_axes, n2v_embs.items()):
         _emb2 = PCA(n_components=2, random_state=1546).fit_transform(_emb)
+        _emb2 = (_emb2 - _emb2.mean(axis=0)) / (_emb2.std(axis=0) + 1e-12)
         if _anchor_idx is not None and _anchor_targets is not None:
             _emb2 = procrustes_align(_emb2, _anchor_idx, _anchor_targets)
         if _labels is not None:
@@ -1200,6 +1203,7 @@ def gnn_embedding_fig(
         _train_mask = gnn["train_mask"]
         _test_mask = gnn["test_mask"]
         _emb2 = PCA(n_components=2, random_state=1546).fit_transform(_emb)
+        _emb2 = (_emb2 - _emb2.mean(axis=0)) / (_emb2.std(axis=0) + 1e-12)
         _anchor_idx = layout_data["anchor_idx"]
         _anchor_targets = layout_data["anchor_targets"]
         if _anchor_idx is not None and _anchor_targets is not None:

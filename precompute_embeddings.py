@@ -202,14 +202,25 @@ else:
 # GraphSAGE (supervised: predict the conference label from a 50/50 split)
 # ---------------------------------------------------------------------------
 class SupervisedSAGE(torch.nn.Module):
-    def __init__(self, in_dim: int, hid: int, emb_dim: int, n_classes: int):
+    """2-layer GraphSAGE with dropout for the supervised setting.
+
+    Dropout is applied:
+      - on the input features (small p, to regularise the identity feats),
+      - on the hidden activations between the two SAGE conv layers (p=0.5).
+    Inference (model.eval()) disables dropout automatically.
+    """
+
+    def __init__(self, in_dim: int, hid: int, emb_dim: int, n_classes: int, dropout: float = 0.5):
         super().__init__()
         self.conv1 = SAGEConv(in_dim, hid)
         self.conv2 = SAGEConv(hid, emb_dim)
         self.head = torch.nn.Linear(emb_dim, n_classes)
+        self.dropout_p = dropout
 
     def encode(self, x_in, ei):
-        h = F.relu(self.conv1(x_in, ei))
+        h = F.dropout(x_in, p=min(self.dropout_p, 0.2), training=self.training)
+        h = F.relu(self.conv1(h, ei))
+        h = F.dropout(h, p=self.dropout_p, training=self.training)
         return self.conv2(h, ei)
 
     def forward(self, x_in, ei):
@@ -236,7 +247,7 @@ if RUN in ("all", "supervised"):
     sup = SupervisedSAGE(in_dim=n, hid=64, emb_dim=32, n_classes=num_classes)
     opt = torch.optim.Adam(sup.parameters(), lr=1e-2, weight_decay=5e-4)
     loss_hist, tr_acc_hist, te_acc_hist = [], [], []
-    EPOCHS_SUP = 200
+    EPOCHS_SUP = 100
     for epoch in range(EPOCHS_SUP):
         sup.train()
         opt.zero_grad()
@@ -348,7 +359,7 @@ if RUN in ("all", "karate"):
     sup_k = SupervisedSAGE(in_dim=n_k, hid=32, emb_dim=32, n_classes=2)
     opt_k = torch.optim.Adam(sup_k.parameters(), lr=1e-2, weight_decay=5e-4)
     loss_hist_k, tr_acc_hist_k, te_acc_hist_k = [], [], []
-    EPOCHS_K = 150
+    EPOCHS_K = 100
     for epoch in range(EPOCHS_K):
         sup_k.train()
         opt_k.zero_grad()

@@ -1194,21 +1194,30 @@ def sec3_n2v_intro(graph_data, mo):
 
         Repeat the biased walk above many times from every node, feed
         the corpus of walks into word2vec, and you get a 16-d vector
-        per node. The three panels below use **the exact setup of
-        Figure 3 in Grover & Leskovec (2016)**: same walk length 80,
-        10 walks per node, window 10, dimension 16 — only $q$ varies.
+        per node. The three panels use the paper's $q$ values
+        (Grover & Leskovec 2016, Fig 3):
 
         - **$q = 0.5$ (DFS-like)**: walks roam outward from each start
-          → embedding captures **homophily / community**.
-        - **$q = 1$**: vanilla random walk.
-        - **$q = 2$ (BFS-like)**: walks stay close to each start
-          → embedding captures **structural role**.
+          → embedding captures **homophily / community**. Same walk
+          settings as the paper: length 80, 10 walks per node,
+          window 10.
+        - **$q = 1$**: vanilla random walk, same long-walk settings.
+        - **$q = 2$ (BFS-like)**: walks **stay close to each start**,
+          and we cut the walk length down to **5 with window 5** —
+          without that, even at $q=2$ each walk only ever visits one
+          subplot and you get back the homophily result. With short
+          walks at $q=2$, the embedding sees only each node's
+          *immediate degree pattern*, and characters with similar
+          structural roles end up clustered together (e.g. Fantine,
+          Myriel, Gavroche all sit in the "sub-protagonist" cluster
+          on Les Mis, regardless of which subplot they lead).
 
-        The paper notes that the contrast is *most visible* through
-        the *k-means cluster colours on the network* (bottom row), not
-        through raw embedding distances. On dense, near-regular
-        graphs the change in scatter is subtle; the change in cluster
-        assignments is dramatic.
+        > **Note about the BFS silhouette.** The reported silhouette is
+        > measured against the *true community* labels. The BFS panel
+        > is specifically *not* organising the embedding by community,
+        > so its silhouette goes near zero or negative on purpose —
+        > the structural story lives in the cluster colours on the
+        > bottom-row network, not in the silhouette number.
 
         _Top row_: 2-d **t-SNE** of each 32-d embedding (linear
         projections look near-identical here; t-SNE preserves local
@@ -1251,11 +1260,11 @@ def load_n2v_all(load_npy, graph_data):
         # Paper-faithful (Grover & Leskovec 2016, Fig 3): same walk
         # config across the three, only q varies.
         n2v_embs = {
-            "DFS-like (p=1, q=0.5)\n→ homophily":
+            "DFS (p=1, q=0.5, walk=80)\n→ homophily":
                 load_npy(f"{_prefix}node2vec_dfs.npy"),
-            "balanced (p=1, q=1)":
+            "balanced (p=1, q=1, walk=80)":
                 load_npy(f"{_prefix}node2vec_balanced.npy"),
-            "BFS-like (p=1, q=2)\n→ structural roles":
+            "BFS (p=1, q=2, walk=5)\n→ structural roles":
                 load_npy(f"{_prefix}node2vec_bfs.npy"),
         }
     return (n2v_embs,)

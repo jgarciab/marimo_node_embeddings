@@ -29,17 +29,16 @@ from torch_geometric.data import Data
 from torch_geometric.nn import SAGEConv, GCNConv
 from sklearn.metrics import silhouette_score
 from sklearn.model_selection import train_test_split
-import umap
 
 
 def umap_2d(emb, seed=1546, n_neighbors=15, min_dist=0.1):
     """Compute a 2-d UMAP projection of a high-dim embedding.
 
-    Saved as a .npy file so the WASM app can load it directly without
-    needing umap-learn (which depends on numba and doesn't run in
-    Pyodide). n_neighbors caps at the dataset size minus 1 to avoid
-    UMAP errors on tiny graphs (karate).
+    Lazy-imported because importing umap after torch segfaults on this
+    machine (a numba / OpenMP collision). The app reverted to t-SNE for
+    the n2v scatter, so this is only kept for future use.
     """
+    import umap
     n = emb.shape[0]
     nn = max(2, min(n_neighbors, n - 1))
     return umap.UMAP(n_components=2, random_state=seed, n_neighbors=nn,
@@ -106,12 +105,8 @@ def run_node2vec(p: float, q: float, out_path: Path,
     for i in range(n):
         emb[i] = model.wv[str(i)]
     np.save(out_path, emb)
-    # Also save the 2-d UMAP projection so the WASM app can plot it
-    # directly (umap-learn doesn't run in Pyodide).
-    umap_path = out_path.with_name(out_path.stem + "_umap.npy")
-    np.save(umap_path, umap_2d(emb))
     sil = silhouette_score(emb, labels)
-    print(f"    saved {out_path.name} + {umap_path.name}  shape={emb.shape}  silhouette={sil:.3f}")
+    print(f"    saved {out_path.name}  shape={emb.shape}  silhouette={sil:.3f}")
     return emb
 
 
@@ -135,16 +130,23 @@ if RUN in ("all", "node2vec"):
     # node's immediate degree pattern, which is the same for all three
     # hubs, so they cluster (anchors cos ≈ 0.75). The (p, q) bias
     # reinforces that, but it is the secondary lever.
-    # Paper-faithful settings (Grover & Leskovec 2016, Fig 3 on Les
-    # Misérables): walk_length=80, num_walks=10, window=10, dim=16.
-    # Contrast comes from q alone: q=0.5 (DFS-like) → homophily;
-    # q=2 (BFS-like) → structural roles. The paper shows the
-    # difference via k-means cluster colours on the network, not via
-    # raw embedding distances — so the bottom row is doing the work.
-    PAPER_KW = dict(walk_length=80, num_walks=10, window=10, dim=16)
-    run_node2vec(1.0, 0.5, DATA / "node2vec_dfs.npy",      **PAPER_KW)
-    run_node2vec(1.0, 1.0, DATA / "node2vec_balanced.npy", **PAPER_KW)
-    run_node2vec(1.0, 2.0, DATA / "node2vec_bfs.npy",      **PAPER_KW)
+    # Paper q-values (Grover & Leskovec 2016, Fig 3 on Les Misérables):
+    # q=0.5 for homophily, q=1 vanilla, q=2 for structural roles.
+    # For DFS / Balanced we use the paper's exact walk hyperparameters
+    # (walk_length=80, num_walks=10, window=10, dim=16). For the BFS /
+    # structural-roles panel we cut walk_length down to 5: a wider
+    # sweep showed that with paper-length walks the BFS embedding
+    # still clusters by named-neighbour community on small graphs,
+    # because each node's walk only ever visits its own subplot.
+    # Short walks (wl=5) keep the algorithm at q=2 but force it to
+    # see only each node's *immediate* degree-pattern, which is what
+    # makes Fantine / Myriel / Gavroche (all leaders of distinct
+    # subplots) cluster together — exactly what the paper claims.
+    LONG = dict(walk_length=80, num_walks=10, window=10, dim=16)
+    SHORT = dict(walk_length=5,  num_walks=10, window=5,  dim=16)
+    run_node2vec(1.0, 0.5, DATA / "node2vec_dfs.npy",      **LONG)
+    run_node2vec(1.0, 1.0, DATA / "node2vec_balanced.npy", **LONG)
+    run_node2vec(1.0, 2.0, DATA / "node2vec_bfs.npy",      **SHORT)
 else:
     print(f"skipping node2vec (only={RUN})")
 
@@ -388,14 +390,15 @@ if RUN in ("all", "karate"):
         for i in range(n_k):
             emb[i] = model.wv[str(i)]
         np.save(out_path, emb)
-        umap_path = out_path.with_name(out_path.stem + "_umap.npy")
-        np.save(umap_path, umap_2d(emb))
         sil = silhouette_score(emb, labels_k)
-        print(f"    saved {out_path.name} + {umap_path.name}  silhouette={sil:.3f}")
+        print(f"    saved {out_path.name}  silhouette={sil:.3f}")
 
     run_node2vec_k(1.0, 0.5, DATA / "karate_node2vec_dfs.npy")
     run_node2vec_k(1.0, 1.0, DATA / "karate_node2vec_balanced.npy")
-    run_node2vec_k(1.0, 2.0, DATA / "karate_node2vec_bfs.npy")
+    # BFS panel uses much shorter walks to expose structural roles
+    # rather than community structure (see Les Mis comment above).
+    run_node2vec_k(1.0, 2.0, DATA / "karate_node2vec_bfs.npy",
+                   walk_length=5, num_walks=10, window=5, dim=16)
 
     # Supervised GraphSAGE for karate
     print("  karate graphsage (supervised) ...")
@@ -507,14 +510,16 @@ if RUN in ("all", "lesmis"):
         for i in range(n_lm):
             emb[i] = model.wv[str(i)]
         np.save(out_path, emb)
-        umap_path = out_path.with_name(out_path.stem + "_umap.npy")
-        np.save(umap_path, umap_2d(emb))
         sil = silhouette_score(emb, labels_lm)
-        print(f"    saved {out_path.name} + {umap_path.name}  silhouette={sil:.3f}")
+        print(f"    saved {out_path.name}  silhouette={sil:.3f}")
 
     run_node2vec_lm(1.0, 0.5, DATA / "lesmis_node2vec_dfs.npy")
     run_node2vec_lm(1.0, 1.0, DATA / "lesmis_node2vec_balanced.npy")
-    run_node2vec_lm(1.0, 2.0, DATA / "lesmis_node2vec_bfs.npy")
+    # Short walks for the BFS panel — see the football block above.
+    # This is what makes Fantine / Myriel / Gavroche end up in the
+    # same cluster despite being in different subplots.
+    run_node2vec_lm(1.0, 2.0, DATA / "lesmis_node2vec_bfs.npy",
+                    walk_length=5, num_walks=10, window=5, dim=16)
 
     print("  lesmis GCN (supervised) ...")
     src_lm, dst_lm = [], []

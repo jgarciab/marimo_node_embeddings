@@ -33,7 +33,7 @@ from sklearn.model_selection import train_test_split
 parser = argparse.ArgumentParser()
 parser.add_argument(
     "--only",
-    choices=["all", "node2vec", "unsupervised", "supervised", "karate"],
+    choices=["all", "node2vec", "unsupervised", "supervised", "karate", "lesmis"],
     default="all",
     help="Restrict to a subset of the precompute steps (handy for re-runs).",
 )
@@ -440,5 +440,103 @@ if RUN in ("all", "karate"):
     )
 else:
     print(f"skipping karate (only={RUN})")
+
+# ===========================================================================
+# Les Misérables (same suite: 3 node2vec settings + supervised GCN)
+# ===========================================================================
+if RUN in ("all", "lesmis"):
+    print("\nles miserables precompute ...")
+    g_lm = ig.Graph.Read_GraphML(str(DATA / "les_miserables.graphml"))
+    if g_lm.is_directed():
+        g_lm = g_lm.as_undirected(mode="collapse")
+    g_lm.simplify()
+    n_lm = g_lm.vcount()
+    labels_lm = np.array([int(v) for v in g_lm.vs["value"]])
+    edges_lm = [(e.source, e.target) for e in g_lm.es]
+    G_lm = nx.Graph()
+    G_lm.add_nodes_from(range(n_lm))
+    G_lm.add_edges_from(edges_lm)
+
+    def run_node2vec_lm(p: float, q: float, out_path: Path,
+                        walk_length: int = 40, num_walks: int = 20,
+                        window: int = 5) -> None:
+        print(f"  lesmis n2v p={p}, q={q}, wl={walk_length}, nw={num_walks}, w={window} ...")
+        n2v = Node2Vec(
+            G_lm, dimensions=32, walk_length=walk_length, num_walks=num_walks,
+            p=p, q=q, workers=1, seed=SEED, quiet=True,
+        )
+        model = n2v.fit(window=window, min_count=1, batch_words=4, seed=SEED, workers=1)
+        emb = np.zeros((n_lm, 32), dtype=np.float32)
+        for i in range(n_lm):
+            emb[i] = model.wv[str(i)]
+        np.save(out_path, emb)
+        sil = silhouette_score(emb, labels_lm)
+        print(f"    saved {out_path.name}  shape={emb.shape}  silhouette={sil:.3f}")
+
+    run_node2vec_lm(4.0,  0.1,  DATA / "lesmis_node2vec_dfs.npy",
+                    walk_length=40, num_walks=20, window=5)
+    run_node2vec_lm(1.0,  1.0,  DATA / "lesmis_node2vec_balanced.npy",
+                    walk_length=40, num_walks=20, window=5)
+    run_node2vec_lm(0.25, 10.0, DATA / "lesmis_node2vec_bfs.npy",
+                    walk_length=8, num_walks=80, window=2)
+
+    print("  lesmis GCN (supervised) ...")
+    src_lm, dst_lm = [], []
+    for u, v in edges_lm:
+        src_lm.extend([u, v]); dst_lm.extend([v, u])
+    edge_index_lm = torch.tensor([src_lm, dst_lm], dtype=torch.long)
+    x_lm = torch.eye(n_lm, dtype=torch.float32)
+    data_lm = Data(x=x_lm, edge_index=edge_index_lm)
+
+    num_classes_lm = int(labels_lm.max() + 1)
+    indices_lm = np.arange(n_lm)
+    train_idx_lm, test_idx_lm = train_test_split(
+        indices_lm, test_size=0.5, stratify=labels_lm, random_state=SEED
+    )
+    train_mask_lm = np.zeros(n_lm, dtype=bool); train_mask_lm[train_idx_lm] = True
+    test_mask_lm = ~train_mask_lm
+    tm_lm = torch.tensor(train_mask_lm); te_lm = torch.tensor(test_mask_lm)
+    y_lm = torch.tensor(labels_lm, dtype=torch.long)
+
+    torch.manual_seed(SEED)
+    sup_lm = SupervisedGCN(in_dim=n_lm, hid=64, emb_dim=32, n_classes=num_classes_lm)
+    opt_lm = torch.optim.Adam(sup_lm.parameters(), lr=1e-2, weight_decay=5e-4)
+    loss_h, tr_h, te_h = [], [], []
+    EPOCHS_LM = 150
+    for epoch in range(EPOCHS_LM):
+        sup_lm.train(); opt_lm.zero_grad()
+        _, logits = sup_lm(data_lm.x, data_lm.edge_index)
+        loss = F.cross_entropy(logits[tm_lm], y_lm[tm_lm])
+        loss.backward(); opt_lm.step()
+        sup_lm.eval()
+        with torch.no_grad():
+            _, lo = sup_lm(data_lm.x, data_lm.edge_index)
+            pred = lo.argmax(1)
+            tr = (pred[tm_lm] == y_lm[tm_lm]).float().mean().item()
+            te = (pred[te_lm] == y_lm[te_lm]).float().mean().item()
+        loss_h.append(loss.item()); tr_h.append(tr); te_h.append(te)
+        if (epoch + 1) % 25 == 0:
+            print(f"    epoch {epoch+1:>3}/{EPOCHS_LM}  loss={loss.item():.4f}  "
+                  f"train_acc={tr:.3f}  test_acc={te:.3f}")
+
+    sup_lm.eval()
+    with torch.no_grad():
+        z = sup_lm.encode(data_lm.x, data_lm.edge_index).cpu().numpy().astype(np.float32)
+        _, lo = sup_lm(data_lm.x, data_lm.edge_index)
+        preds = lo.argmax(1).cpu().numpy().astype(np.int32)
+
+    np.savez(
+        DATA / "lesmis_gnn_supervised.npz",
+        emb=z,
+        train_mask=train_mask_lm, test_mask=test_mask_lm,
+        preds=preds, true=labels_lm.astype(np.int32),
+        loss_history=np.array(loss_h, dtype=np.float32),
+        train_acc_history=np.array(tr_h, dtype=np.float32),
+        test_acc_history=np.array(te_h, dtype=np.float32),
+    )
+    print(f"    saved lesmis_gnn_supervised.npz  shape={z.shape}  "
+          f"train_acc={tr_h[-1]:.3f}  test_acc={te_h[-1]:.3f}")
+else:
+    print(f"skipping lesmis (only={RUN})")
 
 print("done.")

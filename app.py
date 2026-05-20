@@ -191,6 +191,19 @@ def imports():
     }
     KARATE_FACTIONS = {0: "Mr Hi's faction", 1: "Officer's faction"}
 
+    # Les Misérables community labels were obtained by running Louvain
+    # community detection on the co-appearance graph (Knuth's dataset
+    # from the node2vec paper). The names below were assigned by
+    # inspecting which characters fell into each cluster.
+    LESMIS_COMMUNITIES = {
+        0: "Bishop's circle",
+        1: "Valjean & ex-convicts",
+        2: "Fantine's friends",
+        3: "Thénardier's gang",
+        4: "Gillenormand family",
+        5: "ABC revolutionaries",
+    }
+
     def class_names_for(graph_data):
         """Return a list of length n_classes with human-readable names,
         or string class IDs if no canonical mapping is known."""
@@ -203,6 +216,8 @@ def imports():
             return [FOOTBALL_CONFERENCES.get(c, f"class {c}") for c in classes]
         if name.startswith("Karate"):
             return [KARATE_FACTIONS.get(c, f"class {c}") for c in classes]
+        if name.startswith("Les"):
+            return [LESMIS_COMMUNITIES.get(c, f"class {c}") for c in classes]
         return [str(c) for c in classes]
 
     def style_minimal(ax, no_ticks=False):
@@ -347,6 +362,7 @@ def sec1_widgets(mo):
         options=[
             "Football (115 nodes, 12 conferences)",
             "Karate (34 nodes, 2 factions)",
+            "Les Misérables (77 characters, 6 communities)",
             "Upload my own (CSV or GraphML)",
         ],
         value="Football (115 nodes, 12 conferences)",
@@ -516,6 +532,18 @@ def build_graph(load_graphml, parse_graphml, dataset_choice, ig, io, np, pd, upl
             "**Zachary karate club** (34 members, 78 ties). The classic "
             "split into Mr Hi's and the officer's faction after a dispute."
         )
+    elif _choice.startswith("Les"):
+        _g = load_graphml("les_miserables.graphml")
+        _g.vs["name"] = [str(x) for x in _g.vs["id"]]
+        _labels = np.array([int(v) for v in _g.vs["value"]])
+        _description = (
+            "**Les Misérables co-appearance network** (Knuth 1993; used as "
+            "the demo dataset in the node2vec paper). 77 characters, 254 "
+            "co-appearance ties across the chapters of Hugo's novel. Class "
+            "labels come from Louvain community detection on the graph "
+            "itself — six communities that line up with the novel's main "
+            "social circles."
+        )
     elif _choice.startswith("Upload"):
         # User selected upload but nothing was uploaded yet — fall back to football
         _g = load_graphml("football_network.graphml")
@@ -553,6 +581,8 @@ def build_graph(load_graphml, parse_graphml, dataset_choice, ig, io, np, pd, upl
             _prefix = ""
         elif _choice.startswith("Karate"):
             _prefix = "karate_"
+        elif _choice.startswith("Les"):
+            _prefix = "lesmis_"
         else:
             _prefix = None
         graph_data = {
@@ -696,6 +726,16 @@ def sec1_data_note(graph_data, mo):
             "_The two classes are the two factions the karate club split "
             "into after a dispute between Mr Hi and the officer "
             "(Zachary 1977)._"
+        )
+    elif graph_data.get("name", "").startswith("Les"):
+        mo.md(
+            "_The communities (Bishop's circle, Valjean & ex-convicts, "
+            "Fantine's friends, the Thénardier gang, the Gillenormand "
+            "family, the ABC revolutionaries) come from running Louvain "
+            "modularity maximisation on the graph itself — so this "
+            "network is the *most* community-shaped of the three, by "
+            "construction. Node2vec's DFS-vs-BFS contrast also tends to "
+            "show up most clearly here._"
         )
     return
 

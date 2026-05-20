@@ -705,22 +705,28 @@ def sec2_header(mo):
 
     Three classics, side by side on the same network:
 
-    - **Truncated SVD of $A$**: the top singular vectors of the adjacency.
+    - **Truncated SVD of $A$**: the top singular vectors of the
+      adjacency, with the **trivial degree component dropped**. By
+      Perron-Frobenius, the very top singular vector of any non-negative
+      matrix has all-positive entries; on a near-regular graph like
+      football it correlates ~0.75 with node degree, carries no
+      community information, and is therefore discarded.
     - **Laplacian Eigenmaps**: the smallest non-trivial eigenvectors of
-      $L = D - A$. This is what classical spectral clustering uses.
-    - **PCA of $A$**: principal components of the adjacency rows.
+      $L_{\text{sym}} = I - D^{-1/2} A D^{-1/2}$. This is what classical
+      spectral clustering uses (Shi-Malik 1997, Ng-Jordan-Weiss 2002).
+    - **PCA of $A$**: principal components of the adjacency rows. PCA
+      centres $A$ before SVD-ing it, which **automatically removes the
+      Perron-Frobenius / degree component** — so after our explicit drop
+      above, SVD-of-$A$ and PCA-of-$A$ are mathematically the same
+      thing, and the two panels should look identical.
 
     Each is computed in **$k \approx 2 \times \text{n\_classes}$**
-    dimensions (capped at 16) — the canonical
-    "$k \approx \text{number of clusters}$" rule from spectral
-    clustering. Pushing $k$ higher adds noisy high-frequency
-    eigenvectors that hurt Laplacian Eigenmaps in particular. The
-    scatter below shows two of those dimensions: for the Laplacian and
-    PCA it is the first two columns; for SVD-of-$A$ it is **columns 1
-    and 2**, because the very first SVD component of an adjacency
-    matrix is almost pure node degree (a trivial Perron-Frobenius
-    artefact), not community structure. Each panel is rotated and
-    scaled to share an orientation with the network layout above.
+    dimensions (capped at 16) — the canonical "$k \approx $ number of
+    clusters" rule from spectral clustering. Pushing $k$ higher adds
+    noisy high-frequency eigenvectors that hurt Laplacian Eigenmaps in
+    particular. The scatter shows the first two dimensions of each
+    embedding, rotated and scaled to share an orientation with the
+    network layout above.
 
     > **Reading the silhouette score.** For every node, silhouette
     > compares its average distance to other nodes **in its own class**
@@ -757,8 +763,15 @@ def compute_spectral(PCA, TruncatedSVD, graph_data, mo, np):
     else:
         _k = min(16, _n - 1)
 
-    _svd = TruncatedSVD(n_components=_k, random_state=1546)
-    _emb_svd = _svd.fit_transform(_A)
+    # Truncated SVD of A: the top singular vector of any non-negative
+    # matrix is Perron-Frobenius — on a near-regular graph it is roughly
+    # constant and correlates ~0.75 with degree centrality. It carries
+    # no community information (every conference has nodes of similar
+    # degree), so we drop it. After this drop, SVD-of-A is mathematically
+    # identical to PCA-of-A (PCA achieves the same thing by centering
+    # the matrix first).
+    _svd = TruncatedSVD(n_components=_k + 1, random_state=1546)
+    _emb_svd = _svd.fit_transform(_A)[:, 1:]
 
     # Laplacian Eigenmaps: use the *symmetric normalised* Laplacian
     # L_sym = I - D^{-1/2} A D^{-1/2} - canonical choice for community
@@ -798,18 +811,13 @@ def plot_spectral(
     _fig, _axes = plt.subplots(1, 3, figsize=(14.5, 4.8))
     for _ax, (_name, _emb) in zip(_axes, spectral_embs.items()):
         # Spectral methods produce columns already ordered by importance,
-        # so we plot the first two raw dimensions directly (no PCA-of-
-        # PCA washout). One subtlety: the top singular vector of A is
-        # almost purely degree (|corr(SVD col 0, degree)| ~ 0.75 on
-        # football); plotting it makes the SVD panel look completely
-        # different from PCA's, even though SVD cols 1,2 and PCA cols
-        # 0,1 are mathematically the same up to centering. So for the
-        # SVD panel we skip column 0 and use columns 1,2; LE and PCA
-        # use columns 0,1.
-        if _name.startswith("Truncated SVD"):
-            _emb2 = _emb[:, 1:3].astype(float)
-        else:
-            _emb2 = _emb[:, :2].astype(float)
+        # so we plot the first two raw dimensions directly. (The trivial
+        # Perron-Frobenius / degree column of SVD-of-A is dropped at the
+        # embedding step above, so col 0 is now meaningful for all three
+        # methods.) Z-score per axis so panels with very different scales
+        # don't collapse to a thin column under the isotropic Procrustes
+        # scale.
+        _emb2 = _emb[:, :2].astype(float)
         _emb2 = (_emb2 - _emb2.mean(axis=0)) / (_emb2.std(axis=0) + 1e-12)
         if _anchor_idx is not None and _anchor_targets is not None:
             _emb2 = procrustes_align(_emb2, _anchor_idx, _anchor_targets)

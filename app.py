@@ -710,10 +710,17 @@ def sec2_header(mo):
       $L = D - A$. This is what classical spectral clustering uses.
     - **PCA of $A$**: principal components of the adjacency rows.
 
-    Each is computed in 32 dimensions for fair downstream comparison
-    with node2vec and GraphSAGE; the scatter below shows the **first
-    two** dimensions, rotated and scaled to share an orientation with
-    the network layout above so the panels are easier to compare.
+    Each is computed in **$k \approx 2 \times \text{n\_classes}$**
+    dimensions (capped at 16) — the canonical
+    "$k \approx \text{number of clusters}$" rule from spectral
+    clustering. Pushing $k$ higher adds noisy high-frequency
+    eigenvectors that hurt Laplacian Eigenmaps in particular. The
+    scatter below shows two of those dimensions: for the Laplacian and
+    PCA it is the first two columns; for SVD-of-$A$ it is **columns 1
+    and 2**, because the very first SVD component of an adjacency
+    matrix is almost pure node degree (a trivial Perron-Frobenius
+    artefact), not community structure. Each panel is rotated and
+    scaled to share an orientation with the network layout above.
 
     > **Reading the silhouette score.** For every node, silhouette
     > compares its average distance to other nodes **in its own class**
@@ -735,17 +742,29 @@ def compute_spectral(PCA, TruncatedSVD, graph_data, mo, np):
     mo.stop(_g is None, mo.md("_(No graph.)_"))
     _A = np.array(_g.get_adjacency().data, dtype=float)
     _n = _A.shape[0]
-    _k = min(32, _n - 1)
+
+    # Pick the spectral dimension adaptively:
+    #   k = min(16, 2 * n_classes) when we know the number of classes,
+    #   otherwise a flat k = 16.
+    # On the football data, all three spectral methods peak around
+    # k = 12-16; pushing k toward 32 adds noisy high-frequency
+    # eigenvectors and hurts Laplacian Eigenmaps in particular. This is
+    # the canonical "k ~ number of clusters" rule from spectral
+    # clustering (Shi-Malik 1997, von Luxburg 2007).
+    if graph_data.get("classes_available") and graph_data["labels"] is not None:
+        _n_classes = len(set(int(c) for c in graph_data["labels"]))
+        _k = min(16, max(4, 2 * _n_classes), _n - 1)
+    else:
+        _k = min(16, _n - 1)
 
     _svd = TruncatedSVD(n_components=_k, random_state=1546)
     _emb_svd = _svd.fit_transform(_A)
 
     # Laplacian Eigenmaps: use the *symmetric normalised* Laplacian
-    # L_sym = I - D^{-1/2} A D^{-1/2}. This is the canonical choice for
-    # community detection (Shi & Malik 1997, Ng-Jordan-Weiss 2002) and
-    # gives much better small-class recall than the raw L = D - A.
-    # np.linalg.eigh returns eigenvalues in ascending order, so columns
-    # 1..k are the bottom-k non-trivial eigenvectors.
+    # L_sym = I - D^{-1/2} A D^{-1/2} - canonical choice for community
+    # detection (Shi-Malik 1997, Ng-Jordan-Weiss 2002). np.linalg.eigh
+    # returns eigenvalues in ascending order, so cols 1..k are the
+    # bottom-k non-trivial eigenvectors.
     _deg = _A.sum(axis=1)
     _d_inv_sqrt = np.zeros_like(_deg)
     _nz = _deg > 0
@@ -765,7 +784,8 @@ def compute_spectral(PCA, TruncatedSVD, graph_data, mo, np):
     }
     # "Primary" spectral embedding used downstream (Section 5).
     spectral_emb = spectral_embs["Laplacian Eigenmaps (of L_sym)"]
-    return spectral_emb, spectral_embs
+    spectral_k = _k
+    return spectral_emb, spectral_embs, spectral_k
 
 
 @app.cell
@@ -777,15 +797,19 @@ def plot_spectral(
     _anchor_targets = layout_data["anchor_targets"]
     _fig, _axes = plt.subplots(1, 3, figsize=(14.5, 4.8))
     for _ax, (_name, _emb) in zip(_axes, spectral_embs.items()):
-        # Spectral methods produce columns *already ordered by importance*
-        # (singular values for SVD/PCA, ascending eigenvalues for the
-        # Laplacian). PCA of these orthonormal columns washes that
-        # ordering out, so we plot the first two raw dimensions directly.
-        # Then we z-score each axis so panels with very different per-
-        # column scales (notably SVD/PCA of A, whose first singular
-        # vector dwarfs the second) don't collapse to a thin column once
-        # Procrustes applies its isotropic scale.
-        _emb2 = _emb[:, :2].astype(float)
+        # Spectral methods produce columns already ordered by importance,
+        # so we plot the first two raw dimensions directly (no PCA-of-
+        # PCA washout). One subtlety: the top singular vector of A is
+        # almost purely degree (|corr(SVD col 0, degree)| ~ 0.75 on
+        # football); plotting it makes the SVD panel look completely
+        # different from PCA's, even though SVD cols 1,2 and PCA cols
+        # 0,1 are mathematically the same up to centering. So for the
+        # SVD panel we skip column 0 and use columns 1,2; LE and PCA
+        # use columns 0,1.
+        if _name.startswith("Truncated SVD"):
+            _emb2 = _emb[:, 1:3].astype(float)
+        else:
+            _emb2 = _emb[:, :2].astype(float)
         _emb2 = (_emb2 - _emb2.mean(axis=0)) / (_emb2.std(axis=0) + 1e-12)
         if _anchor_idx is not None and _anchor_targets is not None:
             _emb2 = procrustes_align(_emb2, _anchor_idx, _anchor_targets)

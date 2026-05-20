@@ -480,13 +480,19 @@ if RUN in ("all", "lesmis"):
     g_lm = ig.Graph.Read_GraphML(str(DATA / "les_miserables.graphml"))
     if g_lm.is_directed():
         g_lm = g_lm.as_undirected(mode="collapse")
-    g_lm.simplify()
     n_lm = g_lm.vcount()
     labels_lm = np.array([int(v) for v in g_lm.vs["value"]])
-    edges_lm = [(e.source, e.target) for e in g_lm.es]
+    # IMPORTANT: keep the co-appearance weights. The node2vec paper's
+    # Fig 3 demo uses the *weighted* Les Mis network and the biased
+    # walk uses those weights for next-step sampling. Without weights
+    # every co-appearance counts the same and the homophily-vs-role
+    # contrast almost disappears.
+    _has_w = "weight" in g_lm.es.attributes()
     G_lm = nx.Graph()
     G_lm.add_nodes_from(range(n_lm))
-    G_lm.add_edges_from(edges_lm)
+    for _e in g_lm.es:
+        _w = float(_e["weight"]) if _has_w else 1.0
+        G_lm.add_edge(_e.source, _e.target, weight=_w)
 
     def run_node2vec_lm(p: float, q: float, out_path: Path,
                         walk_length: int = 80, num_walks: int = 10,

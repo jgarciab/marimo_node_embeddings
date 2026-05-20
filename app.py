@@ -1247,7 +1247,6 @@ def load_n2v_all(load_npy, graph_data):
     _prefix = graph_data["precomp_prefix"]
     if _g is None or _prefix is None:
         n2v_embs = None
-        n2v_umap = None
     else:
         # Paper-faithful (Grover & Leskovec 2016, Fig 3): same walk
         # config across the three, only q varies.
@@ -1259,15 +1258,7 @@ def load_n2v_all(load_npy, graph_data):
             "BFS-like (p=1, q=2)\n→ structural roles":
                 load_npy(f"{_prefix}node2vec_bfs.npy"),
         }
-        n2v_umap = {
-            "DFS-like (p=1, q=0.5)\n→ homophily":
-                load_npy(f"{_prefix}node2vec_dfs_umap.npy"),
-            "balanced (p=1, q=1)":
-                load_npy(f"{_prefix}node2vec_balanced_umap.npy"),
-            "BFS-like (p=1, q=2)\n→ structural roles":
-                load_npy(f"{_prefix}node2vec_bfs_umap.npy"),
-        }
-    return n2v_embs, n2v_umap
+    return (n2v_embs,)
 
 
 @app.cell
@@ -1303,10 +1294,11 @@ def select_structural_anchors(graph_data, np):
 
 @app.cell
 def plot_n2v_all(
-    KMeans, PALETTE, graph_data, layout_data, mo, n2v_embs, n2v_umap,
+    KMeans, PALETTE, graph_data, layout_data, mo, n2v_embs,
     network_with_cluster_colors, np, plt, show_node_labels, silhouette_score,
     struct_anchors,
 ):
+    from sklearn.manifold import TSNE
     mo.stop(n2v_embs is None, mo.md(""))
     _labels = graph_data["labels"]
     _names = graph_data["names"]
@@ -1334,10 +1326,15 @@ def plot_n2v_all(
 
     _fig, _axes = plt.subplots(2, 3, figsize=(14.5, 9.0), height_ratios=[1, 1])
     for _ax, (_name, _emb) in zip(_axes[0], n2v_embs.items()):
-        # 2-d UMAP (precomputed; UMAP itself depends on numba and so can't
-        # run in Pyodide). UMAP preserves more global structure than
-        # t-SNE, which makes the homophily-vs-role contrast more visible.
-        _emb2 = n2v_umap[_name].astype(float)
+        # 2-d t-SNE projection (UMAP gave odd placements on small,
+        # weighted graphs; t-SNE is the safer default for visualisation).
+        _n = _emb.shape[0]
+        _perp = max(5, min(30, _n // 4))
+        _tsne = TSNE(
+            n_components=2, perplexity=_perp, random_state=1546,
+            init="pca", learning_rate="auto",
+        )
+        _emb2 = _tsne.fit_transform(_emb)
         _emb2 = (_emb2 - _emb2.mean(axis=0)) / (_emb2.std(axis=0) + 1e-12)
         if _labels is not None:
             _colors = [PALETTE[int(c) % len(PALETTE)] for c in _labels]
@@ -1835,19 +1832,47 @@ def classify_all(
 
 
 @app.cell
-def sec5_errors_header(gnn, mo):
+def sec5_errors_header(gnn, graph_data, mo):
     mo.stop(gnn is None, mo.md(""))
-    mo.md(r"""
+    _name = graph_data.get("name", "")
+    if _name.startswith("Football"):
+        _interp = (
+            "Most errors typically sit on **inter-conference edges** — "
+            "teams that played a lot of out-of-conference games (the "
+            "Independents and a few transitioning conferences) are the "
+            "hardest to place."
+        )
+    elif _name.startswith("Karate"):
+        _interp = (
+            "With only two factions any errors will be club members "
+            "who interact across the Mr Hi / Officer dispute line, "
+            "which is exactly where the disputed members of the "
+            "original Zachary (1977) study sit."
+        )
+    elif _name.startswith("Les"):
+        _interp = (
+            "Errors are typically characters who appear across **multiple "
+            "social circles** in Hugo's novel — Valjean, Marius, Cosette "
+            "and Gavroche bridge the prison, the Friends of the ABC, and "
+            "the Thénardier subplots, so a single 'community' label is "
+            "always going to be a lossy summary of who they really are."
+        )
+    else:
+        _interp = (
+            "Errors typically sit on the boundary between two classes — "
+            "nodes whose connections span multiple groups are inherently "
+            "harder to classify than nodes deep inside a single group."
+        )
+    mo.md(rf"""
     ### Where does GCN go wrong on the test set?
 
     Left: the **learned 32-d GCN embedding**, projected to 2-d
     with PCA. Right: the **same nodes back on the actual network**.
     In both, filled markers are train nodes, hollow markers are
     test nodes, and a **black ring** marks every test node the GNN
-    mis-classified. Most errors cluster on the boundary between two
-    classes in the embedding, but on the network you can see they
-    typically sit on **inter-conference edges** — teams that played a
-    lot of out-of-conference games are the hardest to place.
+    mis-classified.
+
+    {_interp}
     """)
     return
 

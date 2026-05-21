@@ -130,23 +130,16 @@ if RUN in ("all", "node2vec"):
     # node's immediate degree pattern, which is the same for all three
     # hubs, so they cluster (anchors cos ≈ 0.75). The (p, q) bias
     # reinforces that, but it is the secondary lever.
-    # Paper q-values (Grover & Leskovec 2016, Fig 3 on Les Misérables):
-    # q=0.5 for homophily, q=1 vanilla, q=2 for structural roles.
-    # For DFS / Balanced we use the paper's exact walk hyperparameters
-    # (walk_length=80, num_walks=10, window=10, dim=16). For the BFS /
-    # structural-roles panel we cut walk_length down to 5: a wider
-    # sweep showed that with paper-length walks the BFS embedding
-    # still clusters by named-neighbour community on small graphs,
-    # because each node's walk only ever visits its own subplot.
-    # Short walks (wl=5) keep the algorithm at q=2 but force it to
-    # see only each node's *immediate* degree-pattern, which is what
-    # makes Fantine / Myriel / Gavroche (all leaders of distinct
-    # subplots) cluster together — exactly what the paper claims.
-    LONG = dict(walk_length=80, num_walks=10, window=10, dim=16)
-    SHORT = dict(walk_length=5,  num_walks=10, window=5,  dim=16)
-    run_node2vec(1.0, 0.5, DATA / "node2vec_dfs.npy",      **LONG)
-    run_node2vec(1.0, 1.0, DATA / "node2vec_balanced.npy", **LONG)
-    run_node2vec(1.0, 2.0, DATA / "node2vec_bfs.npy",      **SHORT)
+    # Stable walks (length 50) across all three panels, only q varies.
+    # The paper uses q=0.5 / q=2 for homophily vs structural roles; on
+    # the small dense graphs here that contrast is mild, so we widen
+    # to q ∈ {0.25, 1, 10}. A wider q gives a wider contrast in the
+    # k-means cluster colours (bottom row of Section 3), even if the
+    # raw embedding-distance contrast stays modest.
+    WALK = dict(walk_length=50, num_walks=10, window=10, dim=16)
+    run_node2vec(1.0, 0.25, DATA / "node2vec_dfs.npy",      **WALK)
+    run_node2vec(1.0, 1.0,  DATA / "node2vec_balanced.npy", **WALK)
+    run_node2vec(1.0, 10.0, DATA / "node2vec_bfs.npy",      **WALK)
 else:
     print(f"skipping node2vec (only={RUN})")
 
@@ -393,12 +386,13 @@ if RUN in ("all", "karate"):
         sil = silhouette_score(emb, labels_k)
         print(f"    saved {out_path.name}  silhouette={sil:.3f}")
 
-    run_node2vec_k(1.0, 0.5, DATA / "karate_node2vec_dfs.npy")
-    run_node2vec_k(1.0, 1.0, DATA / "karate_node2vec_balanced.npy")
-    # BFS panel uses much shorter walks to expose structural roles
-    # rather than community structure (see Les Mis comment above).
-    run_node2vec_k(1.0, 2.0, DATA / "karate_node2vec_bfs.npy",
-                   walk_length=5, num_walks=10, window=5, dim=16)
+    # Same wide-q regime as football: walk_length=50, only q changes.
+    run_node2vec_k(1.0, 0.25, DATA / "karate_node2vec_dfs.npy",
+                   walk_length=50, num_walks=10, window=10, dim=16)
+    run_node2vec_k(1.0, 1.0,  DATA / "karate_node2vec_balanced.npy",
+                   walk_length=50, num_walks=10, window=10, dim=16)
+    run_node2vec_k(1.0, 10.0, DATA / "karate_node2vec_bfs.npy",
+                   walk_length=50, num_walks=10, window=10, dim=16)
 
     # Supervised GraphSAGE for karate
     print("  karate graphsage (supervised) ...")
@@ -513,18 +507,19 @@ if RUN in ("all", "lesmis"):
         sil = silhouette_score(emb, labels_lm)
         print(f"    saved {out_path.name}  silhouette={sil:.3f}")
 
-    run_node2vec_lm(1.0, 0.5, DATA / "lesmis_node2vec_dfs.npy")
-    run_node2vec_lm(1.0, 1.0, DATA / "lesmis_node2vec_balanced.npy")
-    # Short walks for the BFS panel — see the football block above.
-    # This is what makes Fantine / Myriel / Gavroche end up in the
-    # same cluster despite being in different subplots.
-    run_node2vec_lm(1.0, 2.0, DATA / "lesmis_node2vec_bfs.npy",
-                    walk_length=5, num_walks=10, window=5, dim=16)
+    # Same wide-q regime: walk_length=50, only q changes.
+    run_node2vec_lm(1.0, 0.25, DATA / "lesmis_node2vec_dfs.npy",
+                    walk_length=50, num_walks=10, window=10, dim=16)
+    run_node2vec_lm(1.0, 1.0,  DATA / "lesmis_node2vec_balanced.npy",
+                    walk_length=50, num_walks=10, window=10, dim=16)
+    run_node2vec_lm(1.0, 10.0, DATA / "lesmis_node2vec_bfs.npy",
+                    walk_length=50, num_walks=10, window=10, dim=16)
 
     print("  lesmis GCN (supervised) ...")
     src_lm, dst_lm = [], []
-    for u, v in edges_lm:
-        src_lm.extend([u, v]); dst_lm.extend([v, u])
+    for _e in g_lm.es:
+        src_lm.extend([_e.source, _e.target])
+        dst_lm.extend([_e.target, _e.source])
     edge_index_lm = torch.tensor([src_lm, dst_lm], dtype=torch.long)
     x_lm = torch.eye(n_lm, dtype=torch.float32)
     data_lm = Data(x=x_lm, edge_index=edge_index_lm)

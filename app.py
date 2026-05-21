@@ -423,12 +423,12 @@ def title(mo):
 def sec1_widgets(mo):
     dataset_choice = mo.ui.radio(
         options=[
+            "Les Misérables (77 characters, 6 communities)",
             "Football (115 nodes, 12 conferences)",
             "Karate (34 nodes, 2 factions)",
-            "Les Misérables (77 characters, 6 communities)",
             "Upload my own (CSV or GraphML)",
         ],
-        value="Football (115 nodes, 12 conferences)",
+        value="Les Misérables (77 characters, 6 communities)",
         label="Dataset",
     )
     upload = mo.ui.file(
@@ -1518,16 +1518,17 @@ def plot_gnn_split(
     _colors_arr = list(_colors)
     _tr = _train_mask
     _te = _test_mask
+    # Convention used throughout the app: train = filled + thick black
+    # edge ("the GCN saw this one"); test = filled + no edge.
     _ax.scatter(
         _coords[_tr, 0], _coords[_tr, 1],
         s=80, c=[_colors_arr[i] for i in range(len(_colors_arr)) if _tr[i]],
-        edgecolor="black", linewidth=0.6, zorder=3, label=f"train ({int(_tr.sum())})",
+        edgecolor="black", linewidth=1.2, zorder=3, label=f"train ({int(_tr.sum())})",
     )
     _ax.scatter(
         _coords[_te, 0], _coords[_te, 1],
-        s=85, facecolors="white",
-        edgecolor=[_colors_arr[i] for i in range(len(_colors_arr)) if _te[i]],
-        linewidth=2.0, zorder=4, label=f"test ({int(_te.sum())})",
+        s=80, c=[_colors_arr[i] for i in range(len(_colors_arr)) if _te[i]],
+        edgecolor="none", zorder=4, label=f"test ({int(_te.sum())})",
     )
     # Always-on anchor names so the same nodes can be found across figures.
     if struct_anchors and _node_names is not None:
@@ -1545,7 +1546,7 @@ def plot_gnn_split(
     _ax.set_xticks([])
     _ax.set_yticks([])
     _ax.grid(False)
-    _ax.set_title("Train/test split (filled = train, hollow = test)")
+    _ax.set_title("Train/test split (train = thick black edge)")
     _ax.set_aspect("equal")
     _ax.legend(loc="upper right", fontsize=10)
     _fig.tight_layout()
@@ -1632,53 +1633,44 @@ def gnn_embedding_fig(
         _short_names = class_names_for(graph_data)
         _name_for = dict(zip(_classes, _short_names))
 
-        _fig, _ax = plt.subplots(figsize=(6.6, 5.6))
+        _fig, _ax = plt.subplots(figsize=(6.0, 6.0))
         _colors = np.array([PALETTE[int(c) % len(PALETTE)] for c in _labels])
+        # Train nodes: filled + thick BLACK edge (the nodes the GCN was
+        # allowed to see).
         _ax.scatter(
             _emb2[_train_mask, 0], _emb2[_train_mask, 1],
-            s=70, c=_colors[_train_mask], edgecolor="#333333", linewidth=0.4,
+            s=70, c=_colors[_train_mask], edgecolor="black", linewidth=1.2,
             zorder=2, label=f"train ({int(_train_mask.sum())})",
         )
+        # Test nodes: filled, NO edge — they should look like 'normal'
+        # nodes; the train ones get the visible black border to mark
+        # what the GCN was trained on.
         _ax.scatter(
             _emb2[_test_mask, 0], _emb2[_test_mask, 1],
-            s=75, facecolors="white",
-            edgecolor=_colors[_test_mask], linewidth=2.0,
+            s=70, c=_colors[_test_mask], edgecolor="none",
             zorder=3, label=f"test ({int(_test_mask.sum())})",
         )
         if _wrong.any():
-            # Overlay each error with a SQUARE whose colour is the
-            # *predicted* class. The underlying circle's edge keeps
-            # the true class colour, so the pair reads as
-            # "true → predicted" at a glance.
+            # Each error: a SQUARE OUTLINE in the predicted-class colour
+            # around the misclassified node. Transparent fill so the
+            # original node colour stays visible — read as "true colour
+            # inside, predicted colour on the border".
             _pred_colors = np.array([PALETTE[int(c) % len(PALETTE)] for c in _preds])
-            _ax.scatter(
-                _emb2[_wrong, 0], _emb2[_wrong, 1],
-                s=180, marker="s", c=_pred_colors[_wrong],
-                edgecolor="black", linewidth=1.0, zorder=4,
-                label=f"test errors ({int(_wrong.sum())}, square = predicted class)",
-            )
             for _i in np.where(_wrong)[0]:
-                _ax.annotate(
-                    f"{_name_for.get(int(_labels[_i]))} → {_name_for.get(int(_preds[_i]))}",
-                    xy=(_emb2[_i, 0], _emb2[_i, 1]),
-                    xytext=(8, 8), textcoords="offset points",
-                    fontsize=7, color="#222222",
-                    bbox=dict(
-                        boxstyle="round,pad=0.2", fc="white",
-                        ec="#888888", alpha=0.85, lw=0.5,
-                    ),
+                _ax.scatter(
+                    _emb2[_i, 0], _emb2[_i, 1],
+                    s=220, marker="s", facecolors="none",
+                    edgecolor=_pred_colors[_i], linewidth=2.4, zorder=5,
                 )
+            _ax.scatter([], [], s=180, marker="s", facecolors="none",
+                        edgecolor="#333333", linewidth=2.0,
+                        label=f"test errors ({int(_wrong.sum())}, square = predicted class)")
         _ax.legend(loc="upper right", fontsize=9)
         _ax.set_xticks([])
         _ax.set_yticks([])
         _ax.grid(False)
         _ax.set_aspect("equal")
-        _ax.set_title(
-            "Learned GCN embedding — 2D t-SNE\n"
-            "(filled circle = train, hollow circle = test, "
-            "coloured square = wrong, square colour = predicted class)",
-            fontsize=10,
-        )
+        _ax.set_title("Learned GCN embedding — 2D t-SNE", fontsize=11)
         _sil = silhouette_score(_emb, _labels)
         _ax.text(
             0.98,
@@ -1717,42 +1709,35 @@ def gnn_errors_network_fig(
         _short_names = class_names_for(graph_data)
         _name_for = dict(zip(_classes, _short_names))
 
-        _fig, _ax = plt.subplots(figsize=(6.6, 5.6))
+        _fig, _ax = plt.subplots(figsize=(6.0, 6.0))
         _ax.set_facecolor("white")
         _bg = [[_coords[e.source], _coords[e.target]] for e in _g.es]
         _bg_lc = LineCollection(_bg, colors="#dddddd", linewidths=0.5, alpha=0.7, zorder=1)
         _ax.add_collection(_bg_lc)
         _colors = np.array([PALETTE[int(c) % len(PALETTE)] for c in _labels])
+        # Train: filled + thick black edge.
         _ax.scatter(
             _coords[_train_mask, 0], _coords[_train_mask, 1],
-            s=70, c=_colors[_train_mask], edgecolor="#333333", linewidth=0.4,
+            s=70, c=_colors[_train_mask], edgecolor="black", linewidth=1.2,
             zorder=3, label=f"train ({int(_train_mask.sum())})",
         )
+        # Test: filled, no edge.
         _ax.scatter(
             _coords[_test_mask, 0], _coords[_test_mask, 1],
-            s=75, facecolors="white",
-            edgecolor=_colors[_test_mask], linewidth=2.0,
+            s=70, c=_colors[_test_mask], edgecolor="none",
             zorder=4, label=f"test ({int(_test_mask.sum())})",
         )
         if _wrong.any():
             _pred_colors = np.array([PALETTE[int(c) % len(PALETTE)] for c in _preds])
-            _ax.scatter(
-                _coords[_wrong, 0], _coords[_wrong, 1],
-                s=180, marker="s", c=_pred_colors[_wrong],
-                edgecolor="black", linewidth=1.0, zorder=5,
-                label=f"test errors ({int(_wrong.sum())}, square = predicted class)",
-            )
             for _i in np.where(_wrong)[0]:
-                _ax.annotate(
-                    f"{_name_for.get(int(_labels[_i]))} → {_name_for.get(int(_preds[_i]))}",
-                    xy=(_coords[_i, 0], _coords[_i, 1]),
-                    xytext=(8, 8), textcoords="offset points",
-                    fontsize=7, color="#222222",
-                    bbox=dict(
-                        boxstyle="round,pad=0.2", fc="white",
-                        ec="#888888", alpha=0.85, lw=0.5,
-                    ),
+                _ax.scatter(
+                    _coords[_i, 0], _coords[_i, 1],
+                    s=220, marker="s", facecolors="none",
+                    edgecolor=_pred_colors[_i], linewidth=2.4, zorder=5,
                 )
+            _ax.scatter([], [], s=180, marker="s", facecolors="none",
+                        edgecolor="#333333", linewidth=2.0,
+                        label=f"test errors ({int(_wrong.sum())}, square = predicted class)")
         if struct_anchors:
             _node_names = graph_data["names"]
             for _i in struct_anchors:
@@ -1770,11 +1755,7 @@ def gnn_errors_network_fig(
         _ax.set_yticks([])
         _ax.grid(False)
         _ax.set_aspect("equal")
-        _ax.set_title(
-            "Same nodes on the actual network\n"
-            "(coloured circle edge = true class, square fill = predicted class)",
-            fontsize=10,
-        )
+        _ax.set_title("Same nodes on the actual network", fontsize=11)
         _ax.legend(loc="upper right", fontsize=9)
         _fig.tight_layout()
         gnn_errors_fig = _fig
@@ -1956,11 +1937,18 @@ def sec5_errors_header(gnn, graph_data, mo):
     mo.md(rf"""
     ### Where does GCN go wrong on the test set?
 
-    Left: the **learned 32-d GCN embedding**, projected to 2-d
-    with PCA. Right: the **same nodes back on the actual network**.
-    In both, filled markers are train nodes, hollow markers are
-    test nodes, and a **black ring** marks every test node the GNN
-    mis-classified.
+    Left: the **learned 32-d GCN embedding**, projected to 2-d with
+    **t-SNE**. Right: the **same nodes back on the actual network**.
+    Conventions:
+
+    - **Train nodes** — coloured by class, **thick black edge** (the
+      GCN was allowed to see these labels).
+    - **Test nodes** — coloured by class, no edge (held-out from
+      training).
+    - **Misclassified test nodes** — a hollow **square** drawn around
+      the node, **edge coloured by the predicted class**. So the
+      circle inside still shows the true class, and the square's
+      colour shows what the GCN guessed.
 
     {_interp}
     """)

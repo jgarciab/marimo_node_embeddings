@@ -137,7 +137,7 @@ if RUN in ("all", "node2vec"):
     # k-means cluster colours (bottom row of Section 3), even if the
     # raw embedding-distance contrast stays modest.
     WALK = dict(walk_length=50, num_walks=10, window=10, dim=16)
-    run_node2vec(1.0, 0.25, DATA / "node2vec_dfs.npy",      **WALK)
+    run_node2vec(1.0, 0.1, DATA / "node2vec_dfs.npy",      **WALK)
     run_node2vec(1.0, 1.0,  DATA / "node2vec_balanced.npy", **WALK)
     run_node2vec(1.0, 10.0, DATA / "node2vec_bfs.npy",      **WALK)
 else:
@@ -387,7 +387,7 @@ if RUN in ("all", "karate"):
         print(f"    saved {out_path.name}  silhouette={sil:.3f}")
 
     # Same wide-q regime as football: walk_length=50, only q changes.
-    run_node2vec_k(1.0, 0.25, DATA / "karate_node2vec_dfs.npy",
+    run_node2vec_k(1.0, 0.1, DATA / "karate_node2vec_dfs.npy",
                    walk_length=50, num_walks=10, window=10, dim=16)
     run_node2vec_k(1.0, 1.0,  DATA / "karate_node2vec_balanced.npy",
                    walk_length=50, num_walks=10, window=10, dim=16)
@@ -508,7 +508,7 @@ if RUN in ("all", "lesmis"):
         print(f"    saved {out_path.name}  silhouette={sil:.3f}")
 
     # Same wide-q regime: walk_length=50, only q changes.
-    run_node2vec_lm(1.0, 0.25, DATA / "lesmis_node2vec_dfs.npy",
+    run_node2vec_lm(1.0, 0.1, DATA / "lesmis_node2vec_dfs.npy",
                     walk_length=50, num_walks=10, window=10, dim=16)
     run_node2vec_lm(1.0, 1.0,  DATA / "lesmis_node2vec_balanced.npy",
                     walk_length=50, num_walks=10, window=10, dim=16)

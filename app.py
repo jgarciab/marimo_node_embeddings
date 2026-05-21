@@ -1232,34 +1232,34 @@ def sec3_n2v_intro(graph_data, mo):
         )
     else:
         mo.md(r"""
-        ### node2vec embeddings at three settings — Fig 3 of the paper
+        ### node2vec embeddings at three $q$ settings
 
         Repeat the biased walk above many times from every node, feed
         the corpus of walks into word2vec, and you get a 16-d vector
-        per node. The three panels use the paper's $q$ values
-        (Grover & Leskovec 2016, Fig 3):
+        per node. The three panels share the same walk settings —
+        **length 50, 10 walks per node, window 10** — and only the
+        in-out bias $q$ changes:
 
-        - **$q = 0.5$ (DFS-like)**: walks roam outward from each start
-          → embedding captures **homophily / community**. Same walk
-          settings as the paper: length 80, 10 walks per node,
-          window 10.
-        - **$q = 1$**: vanilla random walk, same long-walk settings.
-        - **$q = 2$ (BFS-like)**: walks **stay close to each start**,
-          and we cut the walk length down to **5 with window 5** —
-          without that, even at $q=2$ each walk only ever visits one
-          subplot and you get back the homophily result. With short
-          walks at $q=2$, the embedding sees only each node's
-          *immediate degree pattern*, and characters with similar
-          structural roles end up clustered together (e.g. Fantine,
-          Myriel, Gavroche all sit in the "sub-protagonist" cluster
-          on Les Mis, regardless of which subplot they lead).
+        - **$q = 0.1$ (very DFS)**: walks strongly prefer stepping
+          *outward* from each start → embedding leans toward
+          **homophily / community**.
+        - **$q = 1$**: vanilla random walk.
+        - **$q = 10$ (very BFS)**: walks strongly prefer **staying
+          close** to each start → embedding leans toward
+          **structural role**.
 
-        > **Note about the BFS silhouette.** The reported silhouette is
-        > measured against the *true community* labels. The BFS panel
-        > is specifically *not* organising the embedding by community,
-        > so its silhouette goes near zero or negative on purpose —
-        > the structural story lives in the cluster colours on the
-        > bottom-row network, not in the silhouette number.
+        We pushed $q$ further than the paper's $q=0.5$ / $q=2$ because
+        on the small, dense graphs in this app the paper's range
+        produces panels that look almost identical. Even at $q=10$ the
+        contrast is **subtle in the raw scatter** (the embeddings still
+        share most of their global structure); the visible story lives
+        in the *bottom row* — the k-means cluster colouring on the
+        network. _Honest caveat:_ standard node2vec uses
+        named-neighbour co-occurrence, so it can recognise *types* of
+        community structure, but it cannot really put two distant
+        sub-protagonists in the same cluster just because they share
+        a structural role. For pure structural-role detection the
+        right tools are struc2vec / GraphWave.
 
         _Top row_: 2-d **t-SNE** of each 32-d embedding (linear
         projections look near-identical here; t-SNE preserves local
@@ -1302,11 +1302,11 @@ def load_n2v_all(load_npy, graph_data):
         # Paper-faithful (Grover & Leskovec 2016, Fig 3): same walk
         # config across the three, only q varies.
         n2v_embs = {
-            "DFS (p=1, q=0.5, walk=80)\n→ homophily":
+            "DFS (p=1, q=0.1)\n→ homophily":
                 load_npy(f"{_prefix}node2vec_dfs.npy"),
-            "balanced (p=1, q=1, walk=80)":
+            "balanced (p=1, q=1)":
                 load_npy(f"{_prefix}node2vec_balanced.npy"),
-            "BFS (p=1, q=2, walk=5)\n→ structural roles":
+            "BFS (p=1, q=10)\n→ structural roles":
                 load_npy(f"{_prefix}node2vec_bfs.npy"),
         }
     return (n2v_embs,)
@@ -1857,9 +1857,9 @@ def classify_all(
         _methods.append((f"Spectral · {_name}", _emb))
     if _prefix is not None:
         for _q_label, _file in [
-            ("node2vec — DFS (p=4, q=0.1)",      "node2vec_dfs.npy"),
-            ("node2vec — balanced (p=1, q=1)",   "node2vec_balanced.npy"),
-            ("node2vec — BFS (p=0.25, q=10)",    "node2vec_bfs.npy"),
+            ("node2vec — DFS (p=1, q=0.1)",   "node2vec_dfs.npy"),
+            ("node2vec — balanced (p=1, q=1)", "node2vec_balanced.npy"),
+            ("node2vec — BFS (p=1, q=10)",     "node2vec_bfs.npy"),
         ]:
             _methods.append((_q_label, load_npy(f"{_prefix}{_file}")))
     if gnn is not None:

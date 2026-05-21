@@ -20,6 +20,7 @@ def imports():
 
     from sklearn.cluster import KMeans
     from sklearn.decomposition import PCA, TruncatedSVD
+    from sklearn.manifold import TSNE
     from sklearn.linear_model import LogisticRegression
     from sklearn.metrics import (
         accuracy_score,
@@ -263,45 +264,51 @@ def imports():
         s = float(S.sum() / src_norm_sq) if src_norm_sq > 1e-12 else 1.0
         return (src - src_mean) @ (R * s) + tgt_mean
 
+    # A second palette specifically for k-means cluster colours, so
+    # they don't get confused with the per-class palette used everywhere
+    # else. Picked from matplotlib's "Set2" colormap (colourblind-friendly
+    # pastels, distinct from the tab20 default).
+    KMEANS_PALETTE = list(matplotlib.colormaps["Set2"].colors) + \
+                     list(matplotlib.colormaps["Set3"].colors)
+
     def network_with_cluster_colors(ax, g, coords, edges_iter, cluster_ids,
-                                    palette, struct_anchors=None,
-                                    title=None, names=None, show_labels=False):
-        """Draw the network laid out by FR with node + edge colours coming
-        from a k-means clustering of an embedding (Fig 3 of the node2vec
-        paper). Intra-cluster edges are thick and coloured by their
-        cluster; inter-cluster edges are thin grey. Anchor nodes get a
-        hollow black square around them so their node colour stays
-        visible. Optionally annotate every node with its name."""
+                                    palette=None, struct_anchors=None,
+                                    title=None, names=None, show_labels=False,
+                                    anchor_names_always=True):
+        """Draw the FR-laid-out network with node colours coming from a
+        k-means clustering of an embedding. Edges stay plain grey
+        (per user feedback — colouring them by cluster made the plots
+        noisier than they helped). Anchor nodes get a hollow black
+        square; their *names* are written next to the square by
+        default."""
         from matplotlib.collections import LineCollection as _LC
+        _pal = palette if palette is not None else KMEANS_PALETTE
         ax.set_facecolor("white")
-        # Sort edges into intra-cluster vs inter-cluster.
-        _intra, _intra_c, _inter = [], [], []
-        for e in edges_iter:
-            _s, _t = e.source, e.target
-            _seg = [coords[_s], coords[_t]]
-            if cluster_ids[_s] == cluster_ids[_t]:
-                _intra.append(_seg)
-                _intra_c.append(palette[int(cluster_ids[_s]) % len(palette)])
-            else:
-                _inter.append(_seg)
-        if _inter:
-            ax.add_collection(_LC(_inter, colors="#dddddd",
-                                  linewidths=0.5, alpha=0.55, zorder=1))
-        if _intra:
-            ax.add_collection(_LC(_intra, colors=_intra_c,
-                                  linewidths=1.6, alpha=0.85, zorder=2))
-        _colors = [palette[int(c) % len(palette)] for c in cluster_ids]
+        _segs = [[coords[e.source], coords[e.target]] for e in edges_iter]
+        ax.add_collection(_LC(_segs, colors="#dddddd",
+                              linewidths=0.5, alpha=0.6, zorder=1))
+        _colors = [_pal[int(c) % len(_pal)] for c in cluster_ids]
         ax.scatter(coords[:, 0], coords[:, 1], s=55, c=_colors,
                    edgecolor="#333333", linewidth=0.4, zorder=3)
         if struct_anchors:
             for _i in struct_anchors:
-                # Hollow black square AROUND the node — the fill colour
-                # stays visible (user feedback).
                 ax.scatter(coords[_i, 0], coords[_i, 1], s=260,
                            marker="s", facecolors="none",
                            edgecolor="black", linewidth=1.8, zorder=5)
+                if anchor_names_always and names is not None:
+                    ax.annotate(
+                        str(names[_i]),
+                        xy=(coords[_i, 0], coords[_i, 1]),
+                        xytext=(8, 8), textcoords="offset points",
+                        fontsize=7, color="#222222",
+                        bbox=dict(boxstyle="round,pad=0.2", fc="white",
+                                  ec="#888888", alpha=0.9, lw=0.5),
+                        zorder=6,
+                    )
         if show_labels and names is not None:
             for _i, _nm in enumerate(names):
+                if struct_anchors and _i in struct_anchors and anchor_names_always:
+                    continue
                 ax.annotate(str(_nm), xy=(coords[_i, 0], coords[_i, 1]),
                             xytext=(3, 3), textcoords="offset points",
                             fontsize=6, color="#333333", alpha=0.8, zorder=6)
@@ -350,6 +357,7 @@ def imports():
         LogisticRegression,
         PALETTE,
         PCA,
+        TSNE,
         TruncatedSVD,
         biased_walk,
         class_names_for,
@@ -380,25 +388,31 @@ def title(mo):
     mo.md("""
     # Node embeddings and what we can do with them
 
-    A **node embedding** is a way of putting every vertex of a network into
-    a vector space, so that geometry (distances, angles, clusters) becomes
-    a tool we can use for prediction.
+    A **node embedding** turns every vertex of a network into a vector.
+    Once that's done, *"is node A like node B?"* becomes a question
+    about **distance** — and the full toolkit of geometry, statistics,
+    and machine learning becomes available to answer it.
 
-    We will build up three families of embeddings on the US college
-    football network:
+    Below we build three families of embeddings, then close the loop
+    with a classification benchmark:
 
-    1. **Spectral** — deterministic, from the eigenvectors of $A$ or $L$.
-       Structure-only.
-    2. **node2vec** — random walks fed through *word2vec*. Structure-only,
-       but learned.
-    3. **GCN (graph convolutional network)** — a graph neural network
-       that we train *with* the labels to predict each team's
-       conference. Best-performing architecture in a local sweep over
-       SAGE / GCN / GAT × layers × hidden × dropout.
+    1. **Spectral methods** — top eigenvectors of the adjacency or
+       Laplacian. Deterministic, fast, classical.
+    2. **node2vec** — random walks fed through *word2vec*. Same kind of
+       trick that turns words into vectors, applied to nodes. Two knobs
+       ($p$, $q$) let us tune what *kind* of structure it captures:
+       community vs. role.
+    3. **GCN (graph convolutional network)** — a supervised graph
+       neural network that learns its embedding **with** the labels in
+       hand. The fanciest, and the only one that gets to see classes
+       during training.
 
-    Then we close the loop by asking: **how well do the two structure-only
-    embeddings predict the labels** when we plug them into a plain
-    logistic regression?
+    For each, we then ask: how well does the embedding predict the
+    class when plugged into a plain multinomial logistic regression?
+
+    > _Pick a network in the sidebar — football, karate, Les Misérables,
+    > or upload your own — and the five sections below all re-run on
+    > the new graph._
 
     ---
     """)
@@ -746,7 +760,7 @@ def stats_panel(graph_data, mo):
 @app.cell
 def plot_network(
     LineCollection, PALETTE, class_names_for, graph_data, layout_data, mo, np,
-    plt, show_node_labels,
+    plt, show_node_labels, struct_anchors,
 ):
     _g = graph_data["graph"]
     mo.stop(_g is None, mo.md("_(No graph to display.)_"))
@@ -780,8 +794,24 @@ def plot_network(
             _coords[:, 0], _coords[:, 1], s=55, c="#0b789d",
             edgecolor="#333333", linewidth=0.4, zorder=2,
         )
+    # Anchor names are always shown so the same nodes are identifiable
+    # across every figure that uses the layout.
+    if struct_anchors and _node_names is not None:
+        for _i in struct_anchors:
+            _ax.scatter(_coords[_i, 0], _coords[_i, 1], s=260, marker="s",
+                         facecolors="none", edgecolor="black", linewidth=1.8,
+                         zorder=3)
+            _ax.annotate(str(_node_names[_i]),
+                         xy=(_coords[_i, 0], _coords[_i, 1]),
+                         xytext=(8, 8), textcoords="offset points",
+                         fontsize=8, color="#111111", fontweight="bold",
+                         bbox=dict(boxstyle="round,pad=0.25", fc="white",
+                                   ec="#666666", alpha=0.9, lw=0.5),
+                         zorder=5)
     if show_node_labels.value and _node_names is not None:
         for _i, _nm in enumerate(_node_names):
+            if struct_anchors and _i in struct_anchors:
+                continue
             _ax.annotate(str(_nm), xy=(_coords[_i, 0], _coords[_i, 1]),
                          xytext=(3, 3), textcoords="offset points",
                          fontsize=6, color="#333333", alpha=0.8, zorder=4)
@@ -1032,7 +1062,7 @@ def plot_spectral(
             _km = KMeans(n_clusters=_n_classes, n_init=10, random_state=1546).fit(_emb)
             network_with_cluster_colors(
                 _ax, _g, _coords, _g.es, _km.labels_,
-                PALETTE, struct_anchors=struct_anchors,
+                struct_anchors=struct_anchors,
                 title=f"network coloured by k-means on {_name.split('(')[0].strip()}",
                 names=_names, show_labels=show_node_labels.value,
             )
@@ -1047,24 +1077,24 @@ def sec3_header(mo):
     ---
     ## Section 3: Random walks and node2vec
 
-    Pick a node. Start walking. The neighbours you tend to visit together
-    capture the local structure of the graph. **Node2vec** turns these
-    walks into vectors using *word2vec* — yes, the NLP one — by treating
-    each walk as a sentence and each node as a token.
+    Pick a node. Start walking. The neighbours you tend to visit
+    together capture the local structure of the graph. **node2vec**
+    turns these walks into vectors with *word2vec* — yes, the NLP one —
+    by treating each walk as a sentence and each node as a token.
 
-    The two bias parameters $p$ and $q$ shape the walks:
+    Two parameters shape the walk:
 
     - **$p$ (return bias)**: $p < 1$ encourages **going back** to the
-      previous node, $p > 1$ discourages it.
+      previous node; $p > 1$ discourages it.
     - **$q$ (in-out bias)**: $q < 1$ pushes the walk **outward**
-      (depth-first → captures **homophily / local communities**), $q > 1$
-      keeps it **close** to the start (breadth-first → captures
-      **structural roles**).
+      (depth-first → **homophily / community** structure); $q > 1$
+      keeps it **close** to the start (breadth-first → **structural
+      roles**).
 
-    Move the four sliders below to see how the walk itself changes. The
-    sliders only drive the walk illustration; the three node2vec panels
-    further down were precomputed at three extreme settings so you can
-    compare them at fixed quality.
+    Move the sliders to see how a single walk changes; click **↻ Roll
+    a new walk** to draw another one without changing the parameters.
+    The sliders only drive this illustration — the three node2vec
+    panels further down come from a separate, pre-trained run.
     """)
     return
 
@@ -1077,24 +1107,32 @@ def sec3_walk_widgets(graph_data, mo):
     else:
         _names = list(graph_data["names"])
         start_node = mo.ui.dropdown(options=_names, value=_names[0], label="Start node")
-    walk_length = mo.ui.slider(start=5, stop=50, step=1, value=20, label="Walk length")
+    walk_length = mo.ui.slider(start=3, stop=20, step=1, value=10, label="Walk length")
     p_slider = mo.ui.slider(
-        start=0.25, stop=4.0, step=0.25, value=1.0, label="p (return bias)",
+        start=0.1, stop=10.0, step=0.1, value=1.0, label="p (return bias)",
         show_value=True,
     )
     q_slider = mo.ui.slider(
-        start=0.25, stop=4.0, step=0.25, value=1.0, label="q (in-out bias)",
+        start=0.1, stop=10.0, step=0.1, value=1.0, label="q (in-out bias)",
         show_value=True,
     )
-    return p_slider, q_slider, start_node, walk_length
+    # A button to re-roll the walk without touching the sliders. Pressing
+    # it increments a counter that sample_walk re-reads, so the cell
+    # re-fires with a fresh RNG seed.
+    reroll = mo.ui.run_button(label="↻ Roll a new walk")
+    return p_slider, q_slider, reroll, start_node, walk_length
 
 
 @app.cell
 def sample_walk(
-    biased_walk, graph_data, mo, np, p_slider, q_slider, start_node, walk_length
+    biased_walk, graph_data, mo, np, p_slider, q_slider, reroll, start_node,
+    walk_length,
 ):
     _g = graph_data["graph"]
     mo.stop(_g is None, mo.md("_(No graph.)_"))
+    # Touch reroll.value so the cell re-fires when the button is clicked
+    # (its value is the click count). A fresh RNG seed each time.
+    _ = reroll.value
     _names = graph_data["names"]
     _name_to_idx = {n: i for i, n in enumerate(_names)}
     _start_idx = _name_to_idx.get(start_node.value, 0)
@@ -1162,7 +1200,10 @@ def walk_sentence(graph_data, mo, walk_indices):
 
 
 @app.cell
-def sec3_layout(mo, p_slider, q_slider, start_node, walk_fig, walk_length, walk_sentence_md):
+def sec3_layout(
+    mo, p_slider, q_slider, reroll, start_node, walk_fig, walk_length,
+    walk_sentence_md,
+):
     _left = mo.vstack(
         [
             mo.md("**Tweak the walk:**"),
@@ -1170,6 +1211,7 @@ def sec3_layout(mo, p_slider, q_slider, start_node, walk_fig, walk_length, walk_
             walk_length,
             p_slider,
             q_slider,
+            reroll,
             mo.md("---"),
             walk_sentence_md,
         ],
@@ -1303,11 +1345,10 @@ def select_structural_anchors(graph_data, np):
 
 @app.cell
 def plot_n2v_all(
-    KMeans, PALETTE, graph_data, layout_data, mo, n2v_embs,
+    KMeans, PALETTE, TSNE, graph_data, layout_data, mo, n2v_embs,
     network_with_cluster_colors, np, plt, show_node_labels, silhouette_score,
     struct_anchors,
 ):
-    from sklearn.manifold import TSNE
     mo.stop(n2v_embs is None, mo.md(""))
     _labels = graph_data["labels"]
     _names = graph_data["names"]
@@ -1392,7 +1433,7 @@ def plot_n2v_all(
             _short = _name.split("(")[0].strip().split("\n")[0]
             network_with_cluster_colors(
                 _ax, _g, _coords, _g.es, _km.labels_,
-                PALETTE, struct_anchors=struct_anchors,
+                struct_anchors=struct_anchors,
                 title=f"network coloured by k-means · {_short}",
                 names=_names, show_labels=show_node_labels.value,
             )
@@ -1450,7 +1491,9 @@ def load_gnn(graph_data, load_npz):
 
 
 @app.cell
-def plot_gnn_split(LineCollection, PALETTE, graph_data, gnn, layout_data, mo, plt):
+def plot_gnn_split(
+    LineCollection, PALETTE, graph_data, gnn, layout_data, mo, plt, struct_anchors,
+):
     mo.stop(
         gnn is None,
         mo.md(
@@ -1463,6 +1506,7 @@ def plot_gnn_split(LineCollection, PALETTE, graph_data, gnn, layout_data, mo, pl
     _labels = graph_data["labels"]
     _train_mask = gnn["train_mask"]
     _test_mask = gnn["test_mask"]
+    _node_names = graph_data["names"]
 
     _fig, _ax = plt.subplots(figsize=(6.2, 5.6))
     _ax.set_facecolor("white")
@@ -1485,6 +1529,19 @@ def plot_gnn_split(LineCollection, PALETTE, graph_data, gnn, layout_data, mo, pl
         edgecolor=[_colors_arr[i] for i in range(len(_colors_arr)) if _te[i]],
         linewidth=2.0, zorder=4, label=f"test ({int(_te.sum())})",
     )
+    # Always-on anchor names so the same nodes can be found across figures.
+    if struct_anchors and _node_names is not None:
+        for _i in struct_anchors:
+            _ax.scatter(_coords[_i, 0], _coords[_i, 1], s=260, marker="s",
+                        facecolors="none", edgecolor="black", linewidth=1.8,
+                        zorder=5)
+            _ax.annotate(str(_node_names[_i]),
+                         xy=(_coords[_i, 0], _coords[_i, 1]),
+                         xytext=(8, 8), textcoords="offset points",
+                         fontsize=8, color="#111111", fontweight="bold",
+                         bbox=dict(boxstyle="round,pad=0.25", fc="white",
+                                   ec="#666666", alpha=0.9, lw=0.5),
+                         zorder=6)
     _ax.set_xticks([])
     _ax.set_yticks([])
     _ax.grid(False)
@@ -1547,12 +1604,14 @@ def gnn_summary(gnn, mo):
 
 @app.cell
 def gnn_embedding_fig(
-    PALETTE, PCA, class_names_for, graph_data, gnn, layout_data, mo, np, plt,
-    procrustes_align, silhouette_score,
+    PALETTE, TSNE, class_names_for, graph_data, gnn, mo, np, plt, silhouette_score,
 ):
-    """Build (but don't display) the GCN-embedding PCA figure.
+    """Build (but don't display) the GCN-embedding t-SNE figure.
 
-    Section 5 picks it up and shows it side-by-side with the network view.
+    Layout for misclassified test nodes: keep the circle's colour =
+    *true* class (the node's "real identity") and overlay a square
+    whose colour = *predicted* class (what the GCN guessed). That way
+    you can read both at a glance — "true purple, predicted orange".
     """
     if gnn is None:
         gnn_emb_fig = None
@@ -1562,12 +1621,11 @@ def gnn_embedding_fig(
         _preds = gnn["preds"]
         _train_mask = gnn["train_mask"]
         _test_mask = gnn["test_mask"]
-        _emb2 = PCA(n_components=2, random_state=1546).fit_transform(_emb)
+        _n = _emb.shape[0]
+        _perp = max(5, min(30, _n // 4))
+        _emb2 = TSNE(n_components=2, perplexity=_perp, random_state=1546,
+                     init="pca", learning_rate="auto").fit_transform(_emb)
         _emb2 = (_emb2 - _emb2.mean(axis=0)) / (_emb2.std(axis=0) + 1e-12)
-        _anchor_idx = layout_data["anchor_idx"]
-        _anchor_targets = layout_data["anchor_targets"]
-        if _anchor_idx is not None and _anchor_targets is not None:
-            _emb2 = procrustes_align(_emb2, _anchor_idx, _anchor_targets)
         _wrong = (_preds != _labels) & _test_mask
 
         _classes = sorted(set(int(c) for c in _labels))
@@ -1588,16 +1646,22 @@ def gnn_embedding_fig(
             zorder=3, label=f"test ({int(_test_mask.sum())})",
         )
         if _wrong.any():
+            # Overlay each error with a SQUARE whose colour is the
+            # *predicted* class. The underlying circle's edge keeps
+            # the true class colour, so the pair reads as
+            # "true → predicted" at a glance.
+            _pred_colors = np.array([PALETTE[int(c) % len(PALETTE)] for c in _preds])
             _ax.scatter(
                 _emb2[_wrong, 0], _emb2[_wrong, 1],
-                s=240, facecolors="none", edgecolor="black", linewidth=1.6,
-                zorder=4, label=f"test errors ({int(_wrong.sum())})",
+                s=180, marker="s", c=_pred_colors[_wrong],
+                edgecolor="black", linewidth=1.0, zorder=4,
+                label=f"test errors ({int(_wrong.sum())}, square = predicted class)",
             )
             for _i in np.where(_wrong)[0]:
                 _ax.annotate(
-                    f"→ {_name_for.get(int(_preds[_i]), str(_preds[_i]))}",
+                    f"{_name_for.get(int(_labels[_i]))} → {_name_for.get(int(_preds[_i]))}",
                     xy=(_emb2[_i, 0], _emb2[_i, 1]),
-                    xytext=(6, 6), textcoords="offset points",
+                    xytext=(8, 8), textcoords="offset points",
                     fontsize=7, color="#222222",
                     bbox=dict(
                         boxstyle="round,pad=0.2", fc="white",
@@ -1610,8 +1674,9 @@ def gnn_embedding_fig(
         _ax.grid(False)
         _ax.set_aspect("equal")
         _ax.set_title(
-            "Learned GCN embedding — 2D PCA\n"
-            "(filled = train, hollow = test, black ring + → label = wrong on test)",
+            "Learned GCN embedding — 2D t-SNE\n"
+            "(filled circle = train, hollow circle = test, "
+            "coloured square = wrong, square colour = predicted class)",
             fontsize=10,
         )
         _sil = silhouette_score(_emb, _labels)
@@ -1632,7 +1697,8 @@ def gnn_embedding_fig(
 
 @app.cell
 def gnn_errors_network_fig(
-    LineCollection, PALETTE, class_names_for, graph_data, gnn, layout_data, np, plt
+    LineCollection, PALETTE, class_names_for, graph_data, gnn, layout_data, np,
+    plt, struct_anchors,
 ):
     """Network view with the same test-set errors highlighted and the
     predicted (wrong) class annotated next to each error."""
@@ -1669,29 +1735,44 @@ def gnn_errors_network_fig(
             zorder=4, label=f"test ({int(_test_mask.sum())})",
         )
         if _wrong.any():
+            _pred_colors = np.array([PALETTE[int(c) % len(PALETTE)] for c in _preds])
             _ax.scatter(
                 _coords[_wrong, 0], _coords[_wrong, 1],
-                s=240, facecolors="none", edgecolor="black", linewidth=1.6,
-                zorder=5, label=f"test errors ({int(_wrong.sum())})",
+                s=180, marker="s", c=_pred_colors[_wrong],
+                edgecolor="black", linewidth=1.0, zorder=5,
+                label=f"test errors ({int(_wrong.sum())}, square = predicted class)",
             )
             for _i in np.where(_wrong)[0]:
                 _ax.annotate(
-                    f"→ {_name_for.get(int(_preds[_i]), str(_preds[_i]))}",
+                    f"{_name_for.get(int(_labels[_i]))} → {_name_for.get(int(_preds[_i]))}",
                     xy=(_coords[_i, 0], _coords[_i, 1]),
-                    xytext=(6, 6), textcoords="offset points",
+                    xytext=(8, 8), textcoords="offset points",
                     fontsize=7, color="#222222",
                     bbox=dict(
                         boxstyle="round,pad=0.2", fc="white",
                         ec="#888888", alpha=0.85, lw=0.5,
                     ),
                 )
+        if struct_anchors:
+            _node_names = graph_data["names"]
+            for _i in struct_anchors:
+                _ax.scatter(_coords[_i, 0], _coords[_i, 1], s=260, marker="s",
+                            facecolors="none", edgecolor="black", linewidth=1.8,
+                            zorder=6)
+                _ax.annotate(str(_node_names[_i]),
+                             xy=(_coords[_i, 0], _coords[_i, 1]),
+                             xytext=(-10, 10), textcoords="offset points",
+                             fontsize=8, color="#111111", fontweight="bold",
+                             bbox=dict(boxstyle="round,pad=0.25", fc="white",
+                                       ec="#666666", alpha=0.9, lw=0.5),
+                             zorder=7)
         _ax.set_xticks([])
         _ax.set_yticks([])
         _ax.grid(False)
         _ax.set_aspect("equal")
         _ax.set_title(
             "Same nodes on the actual network\n"
-            "(black ring + → label = misclassified test node, predicted class)",
+            "(coloured circle edge = true class, square fill = predicted class)",
             fontsize=10,
         )
         _ax.legend(loc="upper right", fontsize=9)

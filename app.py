@@ -388,6 +388,8 @@ def title(mo):
     mo.md("""
     # Node embeddings and what we can do with them
 
+    *Javier Garcia-Bernardo — ODISSEI Social Data Science team (SoDa) & Department of Methodology and Statistics, Utrecht University*
+
     A **node embedding** turns every vertex of a network into a vector.
     Once that's done, *"is node A like node B?"* becomes a question
     about **distance** — and the full toolkit of geometry, statistics,
@@ -2004,6 +2006,8 @@ def conclusion(mo):
 def footer(mo):
     mo.md("""
     ---
+
+    _Javier Garcia-Bernardo — SoDa & Utrecht University._
 
     _An interactive companion on node embeddings, built with [marimo](https://marimo.io)._
     """)

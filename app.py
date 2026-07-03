@@ -883,10 +883,9 @@ def sec2_header(mo):
       degree-shaped first axis.
     - **PCA of $A$**: the same idea, but PCA *centres* the data first.
       Centering subtracts out the "everyone plays ~10 games" baseline,
-      which removes that degree mode. So **PCA-of-$A$ is exactly the
-      same as SVD-of-$A$ with its first (degree) component dropped** —
-      we verified that the SVD's second and third columns match PCA's
-      first and second columns almost perfectly.
+      which removes much of that degree mode. On a near-regular graph,
+      PCA and SVD can therefore reveal very similar structure, but with
+      different first axes.
     - **Laplacian Eigenmaps**: the smoothest variations across the
       graph. The matrix $L_{\text{sym}} = I - D^{-1/2} A D^{-1/2}$ is
       the *normalised* Laplacian (degree-corrected); its smallest
@@ -899,10 +898,10 @@ def sec2_header(mo):
     families behave in **opposite ways** as you give them more
     components:
 
-    - **SVD and PCA: more dims → more signal.** Every direction picked
-      up by SVD/PCA is a real pattern in how nodes connect — community,
-      brokerage, neighbourhood shape, … none of them is noise. So we
-      use **$k = 32$** for SVD/PCA.
+    - **SVD and PCA: extra dims can help.** Later directions can still
+      contain useful patterns in how nodes connect — community,
+      brokerage, neighbourhood shape, and other variation. So we use
+      **$k = 32$** for SVD/PCA.
     - **Laplacian Eigenmaps: more dims → more noise.** The Laplacian
       orders its components from "smooth across the whole graph" to
       "wiggly inside individual communities". After roughly **as many
@@ -998,7 +997,7 @@ def plot_spectral(
     _n_classes = len(set(int(c) for c in _labels)) if _labels is not None else 4
     _fig, _axes = plt.subplots(2, 3, figsize=(14.5, 9.0), height_ratios=[1, 1])
     for _ax, (_name, _emb) in zip(_axes[0], spectral_embs.items()):
-        # Plot the first two raw dimensions of each method, honestly.
+        # Plot the first two raw dimensions of each method.
         # For SVD-of-A this means dim 0 is roughly degree (the
         # Perron-Frobenius eigenvector); the SVD panel therefore looks
         # different from PCA, and the *very* next pair of SVD dims
@@ -1089,9 +1088,9 @@ def sec3_header(mo):
     - **$p$ (return bias)**: $p < 1$ encourages **going back** to the
       previous node; $p > 1$ discourages it.
     - **$q$ (in-out bias)**: $q < 1$ pushes the walk **outward**
-      (depth-first → **homophily / community** structure); $q > 1$
-      keeps it **close** to the start (breadth-first → **structural
-      roles**).
+      (depth-first, often more **community-like**); $q > 1$ keeps it
+      **close** to the start (breadth-first, in theory more
+      **role-like**). In practice, this second effect can be subtle.
 
     Move the sliders to see how a single walk changes; click **↻ Roll
     a new walk** to draw another one without changing the parameters.
@@ -1228,8 +1227,8 @@ def sec3_n2v_intro(graph_data, mo):
     _g = graph_data["graph"]
     if _g is None or graph_data["precomp_prefix"] is None:
         mo.md(
-            "_Node2vec embeddings are precomputed only for the football "
-            "and karate networks. Switch to one of those to see the three "
+            "_Node2vec embeddings are precomputed only for the bundled "
+            "example networks. Switch to one of those to see the three "
             "$q$-settings below._"
         )
     else:
@@ -1243,53 +1242,43 @@ def sec3_n2v_intro(graph_data, mo):
         in-out bias $q$ changes:
 
         - **$q = 0.1$ (very DFS)**: walks strongly prefer stepping
-          *outward* from each start → embedding leans toward
-          **homophily / community**.
+          *outward* from each start. In theory, this makes the embedding
+          lean more toward **homophily / community**.
         - **$q = 1$**: vanilla random walk.
         - **$q = 10$ (very BFS)**: walks strongly prefer **staying
-          close** to each start → embedding leans toward
-          **structural role**.
+          close** to each start. In theory, this moves the embedding
+          toward a more **structural-role-like** view.
 
-        We pushed $q$ further than the paper's $q=0.5$ / $q=2$ because
-        on the small, dense graphs in this app the paper's range
-        produces panels that look almost identical. Even at $q=10$ the
-        contrast is **subtle in the raw scatter** (the embeddings still
-        share most of their global structure); the visible story lives
-        in the *bottom row* — the k-means cluster colouring on the
-        network. _Honest caveat:_ standard node2vec uses
-        named-neighbour co-occurrence, so it can recognise *types* of
-        community structure, but it cannot really put two distant
-        sub-protagonists in the same cluster just because they share
-        a structural role. For pure structural-role detection the
-        right tools are struc2vec / GraphWave.
+        The examples use a deliberately wide $q$ range: the paper's
+        gentler $q=0.5$ / $q=2$ settings produce panels that are hard to
+        distinguish on these small graphs. Even here, the contrast is
+        often **subtle**. node2vec is useful as a way to see how biased
+        walks change an embedding, but it is not a modern default
+        recommendation for structural-role detection. For that task,
+        methods such as struc2vec or GraphWave are a better conceptual
+        fit.
 
-        _Top row_: 2-d **t-SNE** of each 32-d embedding (linear
+        _Top row_: 2-d **t-SNE** of each 16-d embedding (linear
         projections look near-identical here; t-SNE preserves local
         geometry where the actual contrast lives).
 
         _Bottom row_: the **same network laid out as in Section 1**,
         but coloured by **k-means on each embedding** instead of the
-        true labels — exactly as in Figure 3 of the node2vec paper
-        (Grover & Leskovec 2016). For a homophily embedding the
-        colours should *match* the community palette from Section 1;
-        for a structural-role embedding they should *cut across*
-        communities — bridges in different parts of the graph end up
-        the same colour.
+        true labels — in the spirit of Figure 3 of the node2vec paper
+        (Grover & Leskovec 2016). If the homophily signal dominates,
+        colours tend to follow communities. If the role signal is
+        stronger, colours may cut across communities.
 
-        **★ Watch the three gold stars.** They are the
-        highest-**betweenness** node in three different classes — i.e.
-        three "bridges" between communities. Bridges have a similar
-        structural role even though they live in different parts of
-        the network. The "**hub pull**" number under each panel
-        measures how close those three end up in the embedding
-        compared with three random nodes:
+        **Watch the hollow squares.** They mark the
+        highest-**betweenness** node in three different classes — three
+        "bridges" between communities. The "**hub pull**" number under
+        each panel measures how close those bridges end up in the
+        embedding compared with three random nodes. Treat it as a
+        diagnostic, not a guarantee:
 
-        - values **below 1** → bridges are pulled *together* (the
-          embedding sees them as structurally similar regardless of
-          community); this is the **BFS / structural** signature.
-        - values **above 1** → bridges are pushed *apart* (the
-          embedding has organised them by community); this is the
-          **DFS / homophily** signature.
+        - values **below 1** suggest the bridges are closer than chance.
+        - values **above 1** suggest the bridges remain farther apart
+          than chance.
         """)
     return
 
@@ -1308,7 +1297,7 @@ def load_n2v_all(load_npy, graph_data):
                 load_npy(f"{_prefix}node2vec_dfs.npy"),
             "balanced (p=1, q=1)":
                 load_npy(f"{_prefix}node2vec_balanced.npy"),
-            "BFS (p=1, q=10)\n→ structural roles":
+            "BFS (p=1, q=10)\n→ role-like (in theory)":
                 load_npy(f"{_prefix}node2vec_bfs.npy"),
         }
     return (n2v_embs,)
@@ -1456,10 +1445,9 @@ def sec4_header_md(mo):
 
     We train a 3-layer **Graph Convolutional Network (GCN)** (with
     dropout for regularisation) for 200 epochs to predict the class of
-    each node. We picked GCN over GraphSAGE and GAT after a local
-    architecture sweep: a 3-layer GCN with hidden size 128 was the only
-    setup that consistently *beat* the unsupervised spectral baselines
-    on this dataset (macro-F1 ≈ 0.93 vs 0.92 for SVD/PCA).
+    each node. The point is not that this exact architecture is special;
+    it is to show what changes when the embedding is trained directly
+    on the classification objective.
 
     1. **Split** the nodes into a 50/50 train/test set, stratified by
        class (right →). The GNN sees the labels of the train nodes only.
@@ -1976,7 +1964,7 @@ def conclusion(mo):
     |---|---|---|---|
     | **Truncated SVD / PCA of $A$** | no | a strong general-purpose baseline; cheap, deterministic, and works whenever the network has any structure at all | needs the right number of dimensions — too few drops accuracy. SVD's first axis is degree-shaped (it disappears if you centre, which is what PCA does) |
     | **Laplacian Eigenmaps** | no | recovering **community-shaped** classes — especially when classes look like cliques in the graph | only the *first few* eigenvectors are useful; adding more dimensions actually *hurts*. Performance falls off classes that aren't real communities (Independents on football) |
-    | **node2vec** | no | shifting between **community** ($q \!<\! 1$, DFS) and **structural-role** ($q \!>\! 1$, BFS) views of the same network — by changing two knobs | many hyperparameters (p, q, walk length, window) — on a dense, near-regular network like football the bias has little room to move, the differences become subtle |
+    | **node2vec** | no | illustrating how biased random walks can move an embedding between more community-like ($q \!<\! 1$, DFS) and more local/role-like ($q \!>\! 1$, BFS) views, in theory | many hyperparameters (p, q, walk length, window); on dense or near-regular graphs the bias can have little room to move, so the differences may be subtle. It is not a modern default recommendation for structural-role detection |
     | **GCN (supervised)** | YES | every dataset where you have *some* labels; trained directly on the classification objective, so it can pick up patterns SVD/LE/node2vec miss | the most expensive option; needs careful regularisation (dropout, weight decay) to not overfit on small training sets. Without enough train labels it just memorises them and doesn't generalise |
 
     **General lessons** the football and karate networks reveal:

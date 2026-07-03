@@ -1,4 +1,4 @@
-"""Precompute node2vec and GraphSAGE embeddings for the football network.
+"""Precompute node2vec and GNN artifacts for the bundled networks.
 
 Run with the networks conda env (has torch, torch_geometric, node2vec, gensim):
 
@@ -6,11 +6,11 @@ Run with the networks conda env (has torch, torch_geometric, node2vec, gensim):
     /Users/garci061/miniforge3/envs/networks/bin/python precompute_embeddings.py --only supervised
 
 Produces in data/:
-    node2vec_p1_q1.npy
-    node2vec_p1_q0.5.npy
-    node2vec_p1_q2.npy
+    node2vec_dfs.npy                  (p=1, q=0.1, 16-d)
+    node2vec_balanced.npy             (p=1, q=1, 16-d)
+    node2vec_bfs.npy                  (p=1, q=10, 16-d)
     gnn_graphsage.npy                 (self-supervised, random-walk objective)
-    gnn_graphsage_supervised.npz      (supervised, predicts the conference label;
+    gnn_supervised.npz                (supervised, predicts the conference label;
                                        bundles emb, train/test masks, preds,
                                        and full loss/accuracy histories)
     node_names.csv
@@ -111,31 +111,9 @@ def run_node2vec(p: float, q: float, out_path: Path,
 
 
 if RUN in ("all", "node2vec"):
-    # Picked from a local sweep on football. To make the panels visibly
-    # different we vary not just (p, q) but also walk_length and window:
-    #   - DFS / homophily: classic node2vec setting (p=4, q=0.1) with
-    #     long walks and a moderate window. Walks roam far from the
-    #     start within the same community.
-    #   - balanced: vanilla random walk (p=1, q=1).
-    #   - BFS / structural role: aggressive q with *short* walks and a
-    #     *small* window, so the embedding only sees each node's
-    #     immediate 2-hop neighbourhood - and high-degree teams from
-    #     different conferences end up looking alike.
-    # Picked from a more careful sweep that also varied walk_length:
-    # on football, (p, q) alone barely moved the cosine similarity
-    # between three hub-anchor nodes from three different conferences;
-    # walk_length turned out to be the dominant lever. Long walks let
-    # the faction signal dominate (hubs stay apart, anchors cos ≈ 0.3);
-    # very short walks (≤ 3 hops) keep the embedding focused on each
-    # node's immediate degree pattern, which is the same for all three
-    # hubs, so they cluster (anchors cos ≈ 0.75). The (p, q) bias
-    # reinforces that, but it is the secondary lever.
-    # Stable walks (length 50) across all three panels, only q varies.
-    # The paper uses q=0.5 / q=2 for homophily vs structural roles; on
-    # the small dense graphs here that contrast is mild, so we widen
-    # to q ∈ {0.25, 1, 10}. A wider q gives a wider contrast in the
-    # k-means cluster colours (bottom row of Section 3), even if the
-    # raw embedding-distance contrast stays modest.
+    # Keep walk_length/window fixed so the app isolates the q bias.
+    # The wide q range makes the bias easier to see on these small
+    # graphs, but node2vec is still only a rough role-vs-community demo.
     WALK = dict(walk_length=50, num_walks=10, window=10, dim=16)
     run_node2vec(1.0, 0.1, DATA / "node2vec_dfs.npy",      **WALK)
     run_node2vec(1.0, 1.0,  DATA / "node2vec_balanced.npy", **WALK)
@@ -241,16 +219,10 @@ else:
     print(f"skipping self-supervised graphsage (only={RUN})")
 
 # ---------------------------------------------------------------------------
-# GraphSAGE (supervised: predict the conference label from a 50/50 split)
+# GCN (supervised: predict the conference label from a 50/50 split)
 # ---------------------------------------------------------------------------
 class SupervisedGCN(torch.nn.Module):
     """3-layer Graph Convolutional Network with dropout.
-
-    Picked from a local architecture sweep on the football network
-    (SAGE/GCN/GAT × layers × hidden × dropout × features × epochs).
-    GCN at 3 layers with hidden=128, dropout=0.5, 200 epochs reaches
-    macro-F1 = 0.927 - the only architecture that consistently beats
-    SVD/PCA's 0.92 on this dataset.
 
     Symmetric normalised propagation makes each layer behave like a
     smoothing step on D^{-1/2} A D^{-1/2}, which on a community-shaped
@@ -283,7 +255,7 @@ SupervisedSAGE = SupervisedGCN
 
 
 if RUN in ("all", "supervised"):
-    print("graphsage (supervised) ...")
+    print("gcn (supervised) ...")
 
     num_classes = int(labels.max() + 1)
     y = torch.tensor(labels, dtype=torch.long)
@@ -350,10 +322,10 @@ if RUN in ("all", "supervised"):
         f"train_acc={final_tr:.3f}  test_acc={final_te:.3f}  silhouette={sil_sup:.3f}"
     )
 else:
-    print(f"skipping supervised graphsage (only={RUN})")
+    print(f"skipping supervised gcn (only={RUN})")
 
 # ===========================================================================
-# Karate club — same suite (3× node2vec + supervised GraphSAGE)
+# Karate club — same suite (3× node2vec + supervised GCN)
 # ===========================================================================
 if RUN in ("all", "karate"):
     print("\nkarate club precompute ...")
@@ -394,8 +366,8 @@ if RUN in ("all", "karate"):
     run_node2vec_k(1.0, 10.0, DATA / "karate_node2vec_bfs.npy",
                    walk_length=50, num_walks=10, window=10, dim=16)
 
-    # Supervised GraphSAGE for karate
-    print("  karate graphsage (supervised) ...")
+    # Supervised GCN for karate
+    print("  karate gcn (supervised) ...")
     src_k = []
     dst_k = []
     for u, v in edges_k:

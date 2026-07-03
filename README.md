@@ -19,12 +19,12 @@ you upload yourself (CSV edge list or GraphML):
    the adjacency, side by side. Includes a primer on the silhouette score.
 3. **Random walks → node2vec** — visualise a single random walk on the
    network and read it as a sentence; then see three node2vec embeddings
-   trained with $q \in \{0.25, 1, 4\}$ to show how the bias parameter
-   reshapes the embedding.
-4. **Supervised GraphSAGE** — a 2-layer GNN trained to predict the node
-   class on a 50/50 train/test split. Shows the split on the network, the
-   train/test accuracy curve, and the learned 32-d embedding (with test
-   errors highlighted).
+   trained with $q \in \{0.1, 1, 10\}$ to show how the bias parameter
+   can reshape the embedding, while also showing node2vec's limits.
+4. **Supervised GCN** — a 3-layer graph convolutional network trained to
+   predict the node class on a 50/50 train/test split. Shows the split on
+   the network, the train/test accuracy curve, and the learned 32-d
+   embedding (with test errors highlighted).
 5. **Comparison: predicting the class from each embedding** — every
    embedding plugged into a multinomial logistic regression on the *same*
    train/test mask, reported as one comparison table (accuracy / macro
@@ -58,8 +58,8 @@ GitHub Pages is configured to do this automatically on every push to
 
 ## Re-computing the bundled embeddings
 
-The node2vec and GraphSAGE embeddings are precomputed (the browser cannot
-run torch). To regenerate them:
+The node2vec and supervised GCN artifacts are precomputed (the browser
+cannot run torch). To regenerate them:
 
 ```bash
 # Needs torch, torch_geometric, node2vec, gensim. The script's docstring
@@ -69,8 +69,9 @@ python precompute_embeddings.py --only supervised   # just one block
 ```
 
 Outputs land in `data/`; copy the ones the app needs (`*node2vec*.npy`,
-`*gnn_supervised.npz`, `football_network.graphml`) into `public/` —
-marimo's WASM exporter bundles `public/` next to the notebook.
+`*gnn_supervised.npz`, `football_network.graphml`,
+`les_miserables.graphml`) into `public/` — marimo's WASM exporter
+bundles `public/` next to the notebook.
 
 ## Credits
 

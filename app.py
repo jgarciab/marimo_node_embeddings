@@ -1236,10 +1236,10 @@ def sec3_n2v_intro(graph_data, mo):
         ### node2vec embeddings at three $q$ settings
 
         Repeat the biased walk above many times from every node, feed
-        the corpus of walks into word2vec, and you get a 16-d vector
-        per node. The three panels share the same walk settings —
-        **length 50, 10 walks per node, window 10** — and only the
-        in-out bias $q$ changes:
+        the corpus of walks into NetworKit's node2vec implementation,
+        and you get a 16-d vector per node. The three panels share the
+        same walk settings — **length 50, 10 walks per node** — and
+        only the in-out bias $q$ changes:
 
         - **$q = 0.1$ (very DFS)**: walks strongly prefer stepping
           *outward* from each start. In theory, this makes the embedding

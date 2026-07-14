@@ -59,10 +59,10 @@ GitHub Pages is configured to do this automatically on every push to
 ## Re-computing the bundled embeddings
 
 The node2vec and supervised GCN artifacts are precomputed (the browser
-cannot run torch). To regenerate them:
+cannot run NetworKit or torch). To regenerate them:
 
 ```bash
-# Needs torch, torch_geometric, node2vec, gensim. The script's docstring
+# Needs networkit, torch, and torch_geometric. The script's docstring
 # points at one conda env that has them installed.
 python precompute_embeddings.py            # everything
 python precompute_embeddings.py --only supervised   # just one block

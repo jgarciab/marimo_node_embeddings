@@ -1,6 +1,6 @@
-"""Precompute node2vec and GNN artifacts for the bundled networks.
+"""Precompute NetworKit node2vec and GNN artifacts for the bundled networks.
 
-Run with the networks conda env (has torch, torch_geometric, node2vec, gensim):
+Run with the networks conda env (has networkit, torch, and torch_geometric):
 
     /Users/garci061/miniforge3/envs/networks/bin/python precompute_embeddings.py
     /Users/garci061/miniforge3/envs/networks/bin/python precompute_embeddings.py --only supervised
@@ -21,8 +21,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import igraph as ig
+import networkit as nk
 import networkx as nx
-from node2vec import Node2Vec
 import torch
 import torch.nn.functional as F
 from torch_geometric.data import Data
@@ -61,6 +61,64 @@ torch.manual_seed(SEED)
 HERE = Path(__file__).resolve().parent
 DATA = HERE / "data"
 
+
+def build_networkit_graph(
+    graph: ig.Graph,
+    weighted: bool = False,
+) -> tuple[nk.Graph, list[int]]:
+    """Return a NetworKit graph plus original ids for non-isolated nodes."""
+    nonisolated = [i for i, d in enumerate(graph.degree()) if d > 0]
+    old_to_nk = {old: i for i, old in enumerate(nonisolated)}
+    has_weights = weighted and "weight" in graph.es.attributes()
+    graph_nk = nk.Graph(len(nonisolated), weighted=has_weights, directed=False)
+    for edge in graph.es:
+        if edge.source not in old_to_nk or edge.target not in old_to_nk:
+            continue
+        source = old_to_nk[edge.source]
+        target = old_to_nk[edge.target]
+        if has_weights:
+            graph_nk.addEdge(source, target, float(edge["weight"]))
+        else:
+            graph_nk.addEdge(source, target)
+    return graph_nk, nonisolated
+
+
+def run_networkit_node2vec(
+    graph: ig.Graph,
+    graph_labels: np.ndarray,
+    p: float,
+    q: float,
+    out_path: Path,
+    *,
+    weighted: bool = False,
+    walk_length: int = 50,
+    num_walks: int = 10,
+    dim: int = 16,
+    label: str = "node2vec",
+) -> np.ndarray:
+    """Run NetworKit Node2Vec and save an embedding aligned to igraph ids."""
+    graph_nk, nonisolated = build_networkit_graph(graph, weighted=weighted)
+    nk.setNumberOfThreads(1)
+    nk.setSeed(SEED, False)
+    print(
+        f"  {label} NetworKit p={p}, q={q}, wl={walk_length}, "
+        f"nw={num_walks}, dim={dim}, weighted={weighted} ..."
+    )
+    n2v = nk.embedding.Node2Vec(graph_nk, p, q, walk_length, num_walks, dim)
+    n2v.run()
+
+    emb_sub = np.array(n2v.getFeatures(), dtype=np.float32)
+    emb = np.zeros((graph.vcount(), dim), dtype=np.float32)
+    emb[nonisolated] = emb_sub
+    np.save(out_path, emb)
+    sil = silhouette_score(emb, graph_labels)
+    isolated = graph.vcount() - len(nonisolated)
+    print(
+        f"    saved {out_path.name}  shape={emb.shape}  "
+        f"isolated={isolated}  silhouette={sil:.3f}"
+    )
+    return emb
+
 # ---------------------------------------------------------------------------
 # Load football network
 # ---------------------------------------------------------------------------
@@ -78,46 +136,24 @@ pd.DataFrame({"name": names}).to_csv(DATA / "node_names.csv", index=False)
 print(f"wrote node_names.csv ({len(names)} rows)")
 
 # ---------------------------------------------------------------------------
-# Build networkx graph for node2vec
+# Build networkx graph for the self-supervised GNN random walks
 # ---------------------------------------------------------------------------
 G = nx.Graph()
 G.add_nodes_from(range(n))
 G.add_edges_from(edges)
 
 
-def run_node2vec(p: float, q: float, out_path: Path,
-                 walk_length: int = 40, num_walks: int = 20,
-                 window: int = 5, dim: int = 32) -> np.ndarray:
-    print(f"  node2vec p={p}, q={q}, wl={walk_length}, nw={num_walks}, w={window} ...")
-    n2v = Node2Vec(
-        G,
-        dimensions=dim,
-        walk_length=walk_length,
-        num_walks=num_walks,
-        p=p,
-        q=q,
-        workers=1,
-        seed=SEED,
-        quiet=True,
-    )
-    model = n2v.fit(window=window, min_count=1, batch_words=4, seed=SEED, workers=1)
-    emb = np.zeros((n, dim), dtype=np.float32)
-    for i in range(n):
-        emb[i] = model.wv[str(i)]
-    np.save(out_path, emb)
-    sil = silhouette_score(emb, labels)
-    print(f"    saved {out_path.name}  shape={emb.shape}  silhouette={sil:.3f}")
-    return emb
-
-
 if RUN in ("all", "node2vec"):
-    # Keep walk_length/window fixed so the app isolates the q bias.
+    # Keep walk_length fixed so the app isolates the q bias.
     # The wide q range makes the bias easier to see on these small
     # graphs, but node2vec is still only a rough role-vs-community demo.
-    WALK = dict(walk_length=50, num_walks=10, window=10, dim=16)
-    run_node2vec(1.0, 0.1, DATA / "node2vec_dfs.npy",      **WALK)
-    run_node2vec(1.0, 1.0,  DATA / "node2vec_balanced.npy", **WALK)
-    run_node2vec(1.0, 10.0, DATA / "node2vec_bfs.npy",      **WALK)
+    WALK = dict(walk_length=50, num_walks=10, dim=16, label="football")
+    run_networkit_node2vec(g, labels, 1.0, 0.1, DATA / "node2vec_dfs.npy",
+                           **WALK)
+    run_networkit_node2vec(g, labels, 1.0, 1.0,
+                           DATA / "node2vec_balanced.npy", **WALK)
+    run_networkit_node2vec(g, labels, 1.0, 10.0,
+                           DATA / "node2vec_bfs.npy", **WALK)
 else:
     print(f"skipping node2vec (only={RUN})")
 
@@ -338,33 +374,15 @@ if RUN in ("all", "karate"):
         1, 1, 1, 1,
     ])
     edges_k = [(e.source, e.target) for e in g_k.es]
-    G_k = nx.Graph()
-    G_k.add_nodes_from(range(n_k))
-    G_k.add_edges_from(edges_k)
-
-    def run_node2vec_k(p: float, q: float, out_path: Path,
-                        walk_length: int = 80, num_walks: int = 10,
-                        window: int = 10, dim: int = 16) -> None:
-        print(f"  karate n2v p={p}, q={q}, wl={walk_length}, nw={num_walks}, w={window} ...")
-        n2v = Node2Vec(
-            G_k, dimensions=dim, walk_length=walk_length, num_walks=num_walks,
-            p=p, q=q, workers=1, seed=SEED, quiet=True,
-        )
-        model = n2v.fit(window=window, min_count=1, batch_words=4, seed=SEED, workers=1)
-        emb = np.zeros((n_k, dim), dtype=np.float32)
-        for i in range(n_k):
-            emb[i] = model.wv[str(i)]
-        np.save(out_path, emb)
-        sil = silhouette_score(emb, labels_k)
-        print(f"    saved {out_path.name}  silhouette={sil:.3f}")
 
     # Same wide-q regime as football: walk_length=50, only q changes.
-    run_node2vec_k(1.0, 0.1, DATA / "karate_node2vec_dfs.npy",
-                   walk_length=50, num_walks=10, window=10, dim=16)
-    run_node2vec_k(1.0, 1.0,  DATA / "karate_node2vec_balanced.npy",
-                   walk_length=50, num_walks=10, window=10, dim=16)
-    run_node2vec_k(1.0, 10.0, DATA / "karate_node2vec_bfs.npy",
-                   walk_length=50, num_walks=10, window=10, dim=16)
+    WALK_K = dict(walk_length=50, num_walks=10, dim=16, label="karate")
+    run_networkit_node2vec(g_k, labels_k, 1.0, 0.1,
+                           DATA / "karate_node2vec_dfs.npy", **WALK_K)
+    run_networkit_node2vec(g_k, labels_k, 1.0, 1.0,
+                           DATA / "karate_node2vec_balanced.npy", **WALK_K)
+    run_networkit_node2vec(g_k, labels_k, 1.0, 10.0,
+                           DATA / "karate_node2vec_bfs.npy", **WALK_K)
 
     # Supervised GCN for karate
     print("  karate gcn (supervised) ...")
@@ -457,35 +475,21 @@ if RUN in ("all", "lesmis"):
     # every co-appearance counts the same and the homophily-vs-role
     # contrast almost disappears.
     _has_w = "weight" in g_lm.es.attributes()
-    G_lm = nx.Graph()
-    G_lm.add_nodes_from(range(n_lm))
-    for _e in g_lm.es:
-        _w = float(_e["weight"]) if _has_w else 1.0
-        G_lm.add_edge(_e.source, _e.target, weight=_w)
-
-    def run_node2vec_lm(p: float, q: float, out_path: Path,
-                        walk_length: int = 80, num_walks: int = 10,
-                        window: int = 10, dim: int = 16) -> None:
-        print(f"  lesmis n2v p={p}, q={q}, wl={walk_length}, nw={num_walks}, w={window} ...")
-        n2v = Node2Vec(
-            G_lm, dimensions=dim, walk_length=walk_length, num_walks=num_walks,
-            p=p, q=q, workers=1, seed=SEED, quiet=True,
-        )
-        model = n2v.fit(window=window, min_count=1, batch_words=4, seed=SEED, workers=1)
-        emb = np.zeros((n_lm, dim), dtype=np.float32)
-        for i in range(n_lm):
-            emb[i] = model.wv[str(i)]
-        np.save(out_path, emb)
-        sil = silhouette_score(emb, labels_lm)
-        print(f"    saved {out_path.name}  silhouette={sil:.3f}")
 
     # Same wide-q regime: walk_length=50, only q changes.
-    run_node2vec_lm(1.0, 0.1, DATA / "lesmis_node2vec_dfs.npy",
-                    walk_length=50, num_walks=10, window=10, dim=16)
-    run_node2vec_lm(1.0, 1.0,  DATA / "lesmis_node2vec_balanced.npy",
-                    walk_length=50, num_walks=10, window=10, dim=16)
-    run_node2vec_lm(1.0, 10.0, DATA / "lesmis_node2vec_bfs.npy",
-                    walk_length=50, num_walks=10, window=10, dim=16)
+    WALK_LM = dict(
+        weighted=_has_w,
+        walk_length=50,
+        num_walks=10,
+        dim=16,
+        label="lesmis",
+    )
+    run_networkit_node2vec(g_lm, labels_lm, 1.0, 0.1,
+                           DATA / "lesmis_node2vec_dfs.npy", **WALK_LM)
+    run_networkit_node2vec(g_lm, labels_lm, 1.0, 1.0,
+                           DATA / "lesmis_node2vec_balanced.npy", **WALK_LM)
+    run_networkit_node2vec(g_lm, labels_lm, 1.0, 10.0,
+                           DATA / "lesmis_node2vec_bfs.npy", **WALK_LM)
 
     print("  lesmis GCN (supervised) ...")
     src_lm, dst_lm = [], []
